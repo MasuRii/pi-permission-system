@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-03-07
+
+### Added
+- Added permission request forwarding so non-UI subagent sessions can surface `ask` confirmations back to the main interactive session.
+- Added filesystem-based request/response handling for both primary and legacy permission-forwarding directories.
+
+### Changed
+- Updated README documentation to describe subagent permission forwarding behavior and current architecture responsibilities.
+- Added `package-lock.json` to the repository for reproducible local installs.
+
+### Fixed
+- Preserved interactive `ask` permission flows for delegated subagents that would otherwise fail without direct UI access.
+- Improved cleanup and compatibility handling around legacy permission-forwarding directories.
+
 ## [0.1.3] - 2026-03-04
 
 ### Fixed

@@ -1,6 +1,6 @@
 # 🔐 pi-permission-system
 
-[![Version](https://img.shields.io/badge/version-0.1.1-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-0.1.4-blue.svg)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Permission enforcement extension for the Pi coding agent that provides centralized, deterministic permission gates for tool, bash, MCP, skill, and special operations.
@@ -15,6 +15,7 @@ Permission enforcement extension for the Pi coding agent that provides centraliz
 - **MCP Access Control** — Server and tool-level permissions for MCP operations
 - **Skill Protection** — Controls which skills can be loaded or read from disk
 - **Per-Agent Overrides** — Agent-specific permission policies via YAML frontmatter
+- **Subagent Permission Forwarding** — Forwards `ask` confirmations from non-UI subagents back to the main interactive session
 - **JSON Schema Validation** — Full schema for editor autocomplete and config validation
 
 ## Installation
@@ -75,6 +76,8 @@ The extension integrates via Pi's lifecycle hooks:
 **Additional behaviors:**
 - Unknown/unregistered tools are blocked before permission checks (prevents bypass attempts)
 - The `task` delegation tool is restricted to the `orchestrator` agent only
+- When a subagent hits an `ask` permission without direct UI access, the request can be forwarded to the main interactive session for confirmation
+- When a subagent triggers an `ask` permission without UI access, the request can be forwarded to the main session and answered there
 
 ## Configuration
 
@@ -307,12 +310,18 @@ permission:
 
 ## Technical Details
 
+### Subagent Permission Forwarding
+
+When a delegated or routed subagent runs without direct UI access, `ask` permissions can still be enforced by forwarding the confirmation request through Pi session directories. The main interactive session polls for forwarded requests, shows the confirmation prompt, writes the response, and the subagent resumes once that decision is available.
+
+This keeps `ask` policies usable even when the original permission check happens inside a non-UI execution context.
+
 ### Architecture
 
 ```
 index.ts                    → Root Pi entrypoint shim
 src/
-├── index.ts                → Extension bootstrap + lifecycle hook handlers
+├── index.ts                → Extension bootstrap, permission checks, and subagent forwarding
 ├── permission-manager.ts   → Policy loading, merging, and resolution
 ├── bash-filter.ts          → Wildcard pattern matching with specificity sorting
 ├── tool-registry.ts        → Registered tool name resolution
