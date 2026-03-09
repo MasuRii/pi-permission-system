@@ -6,25 +6,17 @@ import { join } from "node:path";
 import { BashFilter } from "./bash-filter.js";
 import { PermissionManager } from "./permission-manager.js";
 import { checkRequestedToolRegistration, getToolNameFromValue } from "./tool-registry.js";
+import type { GlobalPermissionConfig } from "./types.js";
 
-type PermissionState = "allow" | "deny" | "ask";
-
-type PermissionConfig = {
-  defaultPolicy: {
-    tools: PermissionState;
-    bash: PermissionState;
-    mcp: PermissionState;
-    skills: PermissionState;
-    special: PermissionState;
-  };
-  tools?: Record<string, PermissionState>;
-  bash?: Record<string, PermissionState>;
-  mcp?: Record<string, PermissionState>;
-  skills?: Record<string, PermissionState>;
-  special?: Record<string, PermissionState>;
+type CreateManagerOptions = {
+  mcpServerNames?: readonly string[];
 };
 
-function createManager(config: PermissionConfig, agentFiles: Record<string, string> = {}) {
+function createManager(
+  config: GlobalPermissionConfig,
+  agentFiles: Record<string, string> = {},
+  options: CreateManagerOptions = {},
+) {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-test-"));
   const globalConfigPath = join(baseDir, "pi-permissions.jsonc");
   const agentsDir = join(baseDir, "agents");
@@ -36,7 +28,11 @@ function createManager(config: PermissionConfig, agentFiles: Record<string, stri
     writeFileSync(join(agentsDir, `${name}.md`), content, "utf8");
   }
 
-  const manager = new PermissionManager({ globalConfigPath, agentsDir });
+  const manager = new PermissionManager({
+    globalConfigPath,
+    agentsDir,
+    mcpServerNames: options.mcpServerNames,
+  });
 
   return {
     manager,
@@ -207,6 +203,70 @@ runTest("Skill permission matching", () => {
   }
 });
 
+runTest("MCP proxy tool infers server-prefixed aliases from configured server names", () => {
+  const { manager, cleanup } = createManager(
+    {
+      defaultPolicy: {
+        tools: "ask",
+        bash: "ask",
+        mcp: "ask",
+        skills: "ask",
+        special: "ask",
+      },
+      mcp: {
+        exa_get_code_context_exa: "allow",
+        "exa_*": "deny",
+      },
+    },
+    {},
+    {
+      mcpServerNames: ["exa"],
+    },
+  );
+
+  try {
+    const result = manager.checkPermission("mcp", { tool: "get_code_context_exa" });
+    assert.equal(result.state, "allow");
+    assert.equal(result.source, "mcp");
+    assert.equal(result.matchedPattern, "exa_get_code_context_exa");
+    assert.equal(result.target, "exa_get_code_context_exa");
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("MCP describe mode normalizes qualified tool names without duplicating server prefixes", () => {
+  const { manager, cleanup } = createManager(
+    {
+      defaultPolicy: {
+        tools: "ask",
+        bash: "ask",
+        mcp: "ask",
+        skills: "ask",
+        special: "ask",
+      },
+      mcp: {
+        exa_web_search_exa: "allow",
+        "exa_*": "deny",
+      },
+    },
+    {},
+    {
+      mcpServerNames: ["exa"],
+    },
+  );
+
+  try {
+    const result = manager.checkPermission("mcp", { describe: "exa:web_search_exa", server: "exa" });
+    assert.equal(result.state, "allow");
+    assert.equal(result.source, "mcp");
+    assert.equal(result.matchedPattern, "exa_web_search_exa");
+    assert.equal(result.target, "exa_web_search_exa");
+  } finally {
+    cleanup();
+  }
+});
+
 runTest("Canonical tools map directly without legacy aliases", () => {
   const { manager, cleanup } = createManager({
     defaultPolicy: {
@@ -230,6 +290,111 @@ runTest("Canonical tools map directly without legacy aliases", () => {
     const lsResult = manager.checkPermission("ls", {});
     assert.equal(lsResult.state, "deny");
     assert.equal(lsResult.source, "tool");
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("tools.mcp acts as fallback allow for unmatched MCP targets", () => {
+  const { manager, cleanup } = createManager(
+    {
+      defaultPolicy: {
+        tools: "ask",
+        bash: "ask",
+        mcp: "ask",
+        skills: "ask",
+        special: "ask",
+      },
+    },
+    {
+      reviewer: `---
+name: reviewer
+permission:
+  tools:
+    mcp: allow
+---
+`,
+    },
+  );
+
+  try {
+    const result = manager.checkPermission("mcp", { tool: "exa:web_search_exa" }, "reviewer");
+    assert.equal(result.state, "allow");
+    assert.equal(result.source, "tool");
+    assert.equal(result.target, "exa_web_search_exa");
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("specific MCP rules override tools.mcp fallback", () => {
+  const { manager, cleanup } = createManager(
+    {
+      defaultPolicy: {
+        tools: "ask",
+        bash: "ask",
+        mcp: "ask",
+        skills: "ask",
+        special: "ask",
+      },
+    },
+    {
+      reviewer: `---
+name: reviewer
+permission:
+  tools:
+    mcp: allow
+  mcp:
+    exa_web_search_exa: deny
+---
+`,
+    },
+    {
+      mcpServerNames: ["exa"],
+    },
+  );
+
+  try {
+    const result = manager.checkPermission("mcp", { tool: "web_search_exa" }, "reviewer");
+    assert.equal(result.state, "deny");
+    assert.equal(result.source, "mcp");
+    assert.equal(result.matchedPattern, "exa_web_search_exa");
+    assert.equal(result.target, "exa_web_search_exa");
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("partial agent defaultPolicy overrides preserve global defaults", () => {
+  const { manager, cleanup } = createManager(
+    {
+      defaultPolicy: {
+        tools: "deny",
+        bash: "deny",
+        mcp: "deny",
+        skills: "deny",
+        special: "deny",
+      },
+    },
+    {
+      reviewer: `---
+name: reviewer
+permission:
+  defaultPolicy:
+    mcp: allow
+---
+`,
+    },
+  );
+
+  try {
+    const readResult = manager.checkPermission("read", {}, "reviewer");
+    assert.equal(readResult.state, "deny");
+    assert.equal(readResult.source, "tool");
+
+    const mcpResult = manager.checkPermission("mcp", { tool: "exa:web_search_exa" }, "reviewer");
+    assert.equal(mcpResult.state, "allow");
+    assert.equal(mcpResult.source, "default");
   } finally {
     cleanup();
   }
@@ -265,6 +430,31 @@ permission:
     const lsResult = manager.checkPermission("ls", {}, "reviewer");
     assert.equal(lsResult.state, "deny");
     assert.equal(lsResult.source, "tool");
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("task uses tool permissions instead of MCP fallback", () => {
+  const { manager, cleanup } = createManager(
+    {
+      defaultPolicy: {
+        tools: "deny",
+        bash: "ask",
+        mcp: "allow",
+        skills: "ask",
+        special: "ask",
+      },
+      tools: {
+        task: "allow",
+      },
+    },
+  );
+
+  try {
+    const taskResult = manager.checkPermission("task", {});
+    assert.equal(taskResult.state, "allow");
+    assert.equal(taskResult.source, "tool");
   } finally {
     cleanup();
   }
