@@ -1,6 +1,6 @@
 # 🔐 pi-permission-system
 
-[![Version](https://img.shields.io/badge/version-0.1.4-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-0.1.6-blue.svg)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Permission enforcement extension for the Pi coding agent that provides centralized, deterministic permission gates for tool, bash, MCP, skill, and special operations.
@@ -10,6 +10,7 @@ Permission enforcement extension for the Pi coding agent that provides centraliz
 ## Features
 
 - **Tool Filtering** — Hides disallowed tools from the agent before it starts (reduces "try another tool" behavior)
+- **System Prompt Sanitization** — Removes denied tool entries from the `Available tools:` system prompt section so the agent only sees tools it can actually call
 - **Runtime Enforcement** — Blocks/asks/allows at tool call time with UI confirmation dialogs
 - **Bash Command Control** — Wildcard pattern matching for granular bash command permissions
 - **MCP Access Control** — Server and tool-level permissions for MCP operations
@@ -67,14 +68,15 @@ All permissions use one of three states:
 
 The extension integrates via Pi's lifecycle hooks:
 
-| Hook                 | Behavior                                                              |
-|----------------------|-----------------------------------------------------------------------|
-| `before_agent_start` | Filters active tools and removes denied skills from system prompt     |
-| `tool_call`          | Enforces permissions for every tool invocation                        |
-| `input`              | Intercepts `/skill:<name>` requests and enforces skill policy         |
+| Hook                 | Behavior                                                                                  |
+|----------------------|-------------------------------------------------------------------------------------------|
+| `before_agent_start` | Filters active tools, removes denied tool entries from the system prompt, and hides denied skills |
+| `tool_call`          | Enforces permissions for every tool invocation                                            |
+| `input`              | Intercepts `/skill:<name>` requests and enforces skill policy                             |
 
 **Additional behaviors:**
 - Unknown/unregistered tools are blocked before permission checks (prevents bypass attempts)
+- The `Available tools:` system prompt section is rewritten to match the filtered active tool set
 - The `task` delegation tool is restricted to the `orchestrator` agent only
 - When a subagent hits an `ask` permission without direct UI access, the request can be forwarded to the main interactive session for confirmation
 - When a subagent triggers an `ask` permission without UI access, the request can be forwarded to the main session and answered there

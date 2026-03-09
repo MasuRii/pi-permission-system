@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-03-09
+
+### Added
+- Sanitized the `Available tools:` system prompt section so denied tools are removed before the agent starts.
+
+### Changed
+- Updated README documentation to describe system-prompt tool sanitization and refreshed the displayed package version.
+
+### Fixed
+- Prevented hidden tools from remaining advertised in the startup system prompt after runtime tool filtering.
+
+## [0.1.5] - 2026-03-09
+
+### Changed
+- Added `repository`, `homepage`, and `bugs` package metadata so npm links back to the public GitHub repository and issue tracker.
+
 ## [0.1.4] - 2026-03-07
 
 ### Added
