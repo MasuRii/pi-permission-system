@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, normalize, resolve, sep } from "node:path";
 
 import { PermissionManager } from "./permission-manager.js";
+import { sanitizeAvailableToolsSection } from "./system-prompt-sanitizer.js";
 import { checkRequestedToolRegistration, getToolNameFromValue } from "./tool-registry.js";
 import type { PermissionCheckResult, PermissionState } from "./types.js";
 
@@ -1087,7 +1088,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
     pi.setActiveTools(allowedTools);
 
-    const skillPromptResult = resolveSkillPromptEntries(event.systemPrompt, permissionManager, agentName, ctx.cwd);
+    const toolPromptResult = sanitizeAvailableToolsSection(event.systemPrompt, allowedTools);
+    const skillPromptResult = resolveSkillPromptEntries(toolPromptResult.prompt, permissionManager, agentName, ctx.cwd);
     activeSkillEntries = skillPromptResult.entries;
 
     if (skillPromptResult.prompt !== event.systemPrompt) {
