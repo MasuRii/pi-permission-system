@@ -1,6 +1,6 @@
 {
   "name": "pi-permission-system",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Permission enforcement extension for the Pi coding agent.",
   "type": "module",
   "main": "./index.ts",
@@ -33,6 +33,14 @@
   ],
   "author": "MasuRii",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MasuRii/pi-permission-system.git"
+  },
+  "homepage": "https://github.com/MasuRii/pi-permission-system#readme",
+  "bugs": {
+    "url": "https://github.com/MasuRii/pi-permission-system/issues"
+  },
   "engines": {
     "node": ">=20"
   },
