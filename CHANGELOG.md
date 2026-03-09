@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2026-03-10
+
+### Changed
+- Refactored pattern compilation to support multiple sources for proper global+agent pattern merging
+- Simplified `wildcard-matcher.ts` by removing unused `wildcardCount` and `literalLength` properties
+- `BashFilter` now accepts pre-compiled patterns via `BashPermissionSource` type
+- Replaced `compilePermissionPatterns` with `compilePermissionPatternsFromSources` for cleaner API
+
+### Fixed
+- Permission pattern priority now correctly implements last-match-wins hierarchy (opencode-style)
+- MCP tool-level deny no longer blocks specific MCP allow patterns
+
+### Tests
+- Updated tests to reflect last-match-wins behavior
+- Added test for specific MCP rules winning over `tools.mcp: deny`
+- Rearranged test pattern declarations for clarity
+
 ## [0.1.7] - 2026-03-10
 
 ### Added
