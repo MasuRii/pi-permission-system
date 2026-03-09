@@ -1,8 +1,9 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { BashFilter } from "./bash-filter.js";
+import { extractFrontmatter, getNonEmptyString, isPermissionState, parseSimpleYamlMap, toRecord } from "./common.js";
 import type {
   AgentPermissions,
   BashPermissions,
@@ -11,18 +12,21 @@ import type {
   PermissionDefaultPolicy,
   PermissionState,
 } from "./types.js";
+import {
+  compileWildcardPatterns,
+  findCompiledWildcardMatch,
+  findCompiledWildcardMatchForNames,
+  type CompiledWildcardPattern,
+} from "./wildcard-matcher.js";
 
 const GLOBAL_CONFIG_PATH = join(homedir(), ".pi", "agent", "pi-permissions.jsonc");
 const AGENTS_DIR = join(homedir(), ".pi", "agent", "agents");
+const LEGACY_GLOBAL_SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
+const GLOBAL_MCP_CONFIG_PATH = join(homedir(), ".pi", "agent", "mcp.json");
 
-const BUILT_IN_TOOLS = new Set(["bash", "read", "write", "edit", "grep", "find", "ls"]);
-const LEGACY_TOOL_ALIASES: Record<string, string> = {};
+const TOOL_PERMISSION_NAMES = new Set(["bash", "read", "write", "edit", "grep", "find", "ls", "mcp", "task"]);
 const SPECIAL_PERMISSION_KEYS = new Set(["doom_loop", "external_directory"]);
 const MCP_BASELINE_TARGETS = new Set(["mcp_status", "mcp_list", "mcp_search", "mcp_describe", "mcp_connect"]);
-
-function normalizeToolName(toolName: string): string {
-  return LEGACY_TOOL_ALIASES[toolName] || toolName;
-}
 
 const DEFAULT_POLICY: PermissionDefaultPolicy = {
   tools: "ask",
@@ -113,17 +117,6 @@ function stripJsonComments(input: string): string {
   return output;
 }
 
-function isPermissionState(value: unknown): value is PermissionState {
-  return value === "allow" || value === "deny" || value === "ask";
-}
-
-function toRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return {};
-  }
-  return value as Record<string, unknown>;
-}
-
 function normalizePolicy(value: unknown): PermissionDefaultPolicy {
   const record = toRecord(value);
   return {
@@ -133,6 +126,33 @@ function normalizePolicy(value: unknown): PermissionDefaultPolicy {
     skills: isPermissionState(record.skills) ? record.skills : DEFAULT_POLICY.skills,
     special: isPermissionState(record.special) ? record.special : DEFAULT_POLICY.special,
   };
+}
+
+function normalizePartialPolicy(value: unknown): Partial<PermissionDefaultPolicy> {
+  const record = toRecord(value);
+  const normalized: Partial<PermissionDefaultPolicy> = {};
+
+  if (isPermissionState(record.tools)) {
+    normalized.tools = record.tools;
+  }
+
+  if (isPermissionState(record.bash)) {
+    normalized.bash = record.bash;
+  }
+
+  if (isPermissionState(record.mcp)) {
+    normalized.mcp = record.mcp;
+  }
+
+  if (isPermissionState(record.skills)) {
+    normalized.skills = record.skills;
+  }
+
+  if (isPermissionState(record.special)) {
+    normalized.special = record.special;
+  }
+
+  return normalized;
 }
 
 function normalizePermissionRecord(value: unknown): Record<string, PermissionState> {
@@ -146,17 +166,39 @@ function normalizePermissionRecord(value: unknown): Record<string, PermissionSta
   return normalized;
 }
 
-function normalizeRawPermission(raw: unknown): AgentPermissions {
-  const record = toRecord(raw);
+function readConfiguredMcpServerNamesFromConfigPath(configPath: string): string[] {
+  try {
+    const raw = readFileSync(configPath, "utf-8");
+    const parsed = JSON.parse(stripJsonComments(raw)) as unknown;
+    const root = toRecord(parsed);
+    const serverRecord = toRecord(root.mcpServers ?? root["mcp-servers"]);
 
-  const tools = normalizePermissionRecord(record.tools);
-  const normalizedTools: Record<string, PermissionState> = {};
-  for (const [toolName, state] of Object.entries(tools)) {
-    normalizedTools[normalizeToolName(toolName)] = state;
+    return Object.keys(serverRecord)
+      .map((name) => name.trim())
+      .filter((name) => name.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function getConfiguredMcpServerNamesFromPaths(paths: readonly string[]): string[] {
+  const seen = new Set<string>();
+
+  for (const path of paths) {
+    for (const name of readConfiguredMcpServerNamesFromConfigPath(path)) {
+      seen.add(name);
+    }
   }
 
+  return [...seen].sort((left, right) => right.length - left.length || left.localeCompare(right));
+}
+
+function normalizeRawPermission(raw: unknown): AgentPermissions {
+  const record = toRecord(raw);
+  const normalizedTools = normalizePermissionRecord(record.tools);
+
   const normalized: AgentPermissions = {
-    defaultPolicy: normalizePolicy(record.defaultPolicy),
+    defaultPolicy: normalizePartialPolicy(record.defaultPolicy),
     tools: normalizedTools,
     bash: normalizePermissionRecord(record.bash),
     mcp: normalizePermissionRecord(record.mcp),
@@ -169,10 +211,8 @@ function normalizeRawPermission(raw: unknown): AgentPermissions {
       continue;
     }
 
-    const normalizedToolName = normalizeToolName(key);
-
-    if (BUILT_IN_TOOLS.has(normalizedToolName)) {
-      normalized.tools = { ...(normalized.tools || {}), [normalizedToolName]: value };
+    if (TOOL_PERMISSION_NAMES.has(key)) {
+      normalized.tools = { ...(normalized.tools || {}), [key]: value };
       continue;
     }
 
@@ -182,155 +222,6 @@ function normalizeRawPermission(raw: unknown): AgentPermissions {
   }
 
   return normalized;
-}
-
-type StackNode = { indent: number; target: Record<string, unknown> };
-
-function parseSimpleYamlMap(input: string): Record<string, unknown> {
-  const root: Record<string, unknown> = {};
-  const stack: StackNode[] = [{ indent: -1, target: root }];
-
-  const lines = input.split(/\r?\n/);
-  for (const rawLine of lines) {
-    if (!rawLine.trim() || rawLine.trimStart().startsWith("#")) {
-      continue;
-    }
-
-    const indent = rawLine.length - rawLine.trimStart().length;
-    const line = rawLine.trim();
-
-    const separatorIndex = line.indexOf(":");
-    if (separatorIndex <= 0) {
-      continue;
-    }
-
-    const key = line.slice(0, separatorIndex).trim().replace(/^['"]|['"]$/g, "");
-    const rawValue = line.slice(separatorIndex + 1).trim();
-
-    while (stack.length > 1 && indent <= stack[stack.length - 1].indent) {
-      stack.pop();
-    }
-
-    const current = stack[stack.length - 1].target;
-
-    if (!rawValue) {
-      const child: Record<string, unknown> = {};
-      current[key] = child;
-      stack.push({ indent, target: child });
-      continue;
-    }
-
-    let scalar = rawValue;
-    if ((scalar.startsWith('"') && scalar.endsWith('"')) || (scalar.startsWith("'") && scalar.endsWith("'"))) {
-      scalar = scalar.slice(1, -1);
-    }
-
-    current[key] = scalar;
-  }
-
-  return root;
-}
-
-function extractFrontmatter(markdown: string): string {
-  const normalized = markdown.replace(/\r\n/g, "\n");
-  if (!normalized.startsWith("---\n")) {
-    return "";
-  }
-
-  const end = normalized.indexOf("\n---", 4);
-  if (end === -1) {
-    return "";
-  }
-
-  return normalized.slice(4, end);
-}
-
-function isBuiltInToolName(toolName: string): boolean {
-  return BUILT_IN_TOOLS.has(toolName);
-}
-
-function wildcardToRegExp(pattern: string): RegExp {
-  const escaped = pattern
-    .split("*")
-    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-    .join(".*");
-
-  return new RegExp(`^${escaped}$`);
-}
-
-type WildcardMatch = { state: PermissionState; matchedPattern: string; matchedName: string };
-
-function sortPermissionPatterns(
-  permissions: Record<string, PermissionState>,
-): Array<[pattern: string, state: PermissionState]> {
-  return Object.entries(permissions).sort((a, b) => {
-    const [aPattern] = a;
-    const [bPattern] = b;
-    const aWildcards = (aPattern.match(/\*/g) || []).length;
-    const bWildcards = (bPattern.match(/\*/g) || []).length;
-
-    if (aWildcards !== bWildcards) {
-      return aWildcards - bWildcards;
-    }
-
-    const aLiteralLength = aPattern.replace(/\*/g, "").length;
-    const bLiteralLength = bPattern.replace(/\*/g, "").length;
-
-    if (aLiteralLength !== bLiteralLength) {
-      return bLiteralLength - aLiteralLength;
-    }
-
-    return bPattern.length - aPattern.length;
-  });
-}
-
-function findWildcardPermission(
-  permissions: Record<string, PermissionState> | undefined,
-  name: string,
-): WildcardMatch | null {
-  if (!permissions) {
-    return null;
-  }
-
-  for (const [pattern, state] of sortPermissionPatterns(permissions)) {
-    if (wildcardToRegExp(pattern).test(name)) {
-      return { state, matchedPattern: pattern, matchedName: name };
-    }
-  }
-
-  return null;
-}
-
-function findWildcardPermissionForNames(
-  permissions: Record<string, PermissionState> | undefined,
-  names: readonly string[],
-): WildcardMatch | null {
-  if (!permissions || names.length === 0) {
-    return null;
-  }
-
-  const normalizedNames = names.map((value) => value.trim()).filter((value) => value.length > 0);
-  if (normalizedNames.length === 0) {
-    return null;
-  }
-
-  for (const name of normalizedNames) {
-    const match = findWildcardPermission(permissions, name);
-    if (match) {
-      return match;
-    }
-  }
-
-  return null;
-}
-
-function getNonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
 }
 
 function parseQualifiedMcpToolName(value: string): { server: string; tool: string } | null {
@@ -353,7 +244,59 @@ function parseQualifiedMcpToolName(value: string): { server: string; tool: strin
   return { server, tool };
 }
 
-function createMcpPermissionTargets(input: unknown): string[] {
+function addDerivedMcpServerTargets(
+  toolName: string,
+  configuredServerNames: readonly string[],
+  pushTarget: (value: string | null) => void,
+): void {
+  const trimmedToolName = toolName.trim();
+  if (!trimmedToolName) {
+    return;
+  }
+
+  for (const serverName of configuredServerNames) {
+    const trimmedServerName = serverName.trim();
+    if (!trimmedServerName) {
+      continue;
+    }
+
+    if (!trimmedToolName.endsWith(`_${trimmedServerName}`)) {
+      continue;
+    }
+
+    if (trimmedToolName.startsWith(`${trimmedServerName}_`)) {
+      continue;
+    }
+
+    pushTarget(`${trimmedServerName}_${trimmedToolName}`);
+    pushTarget(`${trimmedServerName}:${trimmedToolName}`);
+    pushTarget(trimmedServerName);
+  }
+}
+
+function pushMcpToolPermissionTargets(
+  rawReference: string,
+  serverHint: string | null,
+  configuredServerNames: readonly string[],
+  pushTarget: (value: string | null) => void,
+): void {
+  const qualified = parseQualifiedMcpToolName(rawReference);
+  const resolvedServer = serverHint ?? qualified?.server ?? null;
+  const resolvedTool = qualified?.tool ?? rawReference;
+
+  if (resolvedServer) {
+    pushTarget(`${resolvedServer}_${resolvedTool}`);
+    pushTarget(`${resolvedServer}:${resolvedTool}`);
+    pushTarget(resolvedServer);
+  } else {
+    addDerivedMcpServerTargets(resolvedTool, configuredServerNames, pushTarget);
+  }
+
+  pushTarget(resolvedTool);
+  pushTarget(rawReference);
+}
+
+function createMcpPermissionTargets(input: unknown, configuredServerNames: readonly string[] = []): string[] {
   const record = toRecord(input);
   const tool = getNonEmptyString(record.tool);
   const server = getNonEmptyString(record.server);
@@ -372,18 +315,7 @@ function createMcpPermissionTargets(input: unknown): string[] {
   };
 
   if (tool) {
-    const qualified = parseQualifiedMcpToolName(tool);
-    const resolvedServer = server ?? qualified?.server ?? null;
-    const resolvedTool = qualified?.tool ?? tool;
-
-    if (resolvedServer) {
-      pushTarget(`${resolvedServer}_${resolvedTool}`);
-      pushTarget(`${resolvedServer}:${resolvedTool}`);
-      pushTarget(resolvedServer);
-    }
-
-    pushTarget(resolvedTool);
-    pushTarget(tool);
+    pushMcpToolPermissionTargets(tool, server, configuredServerNames, pushTarget);
     pushTarget("mcp_call");
     return targets;
   }
@@ -396,13 +328,7 @@ function createMcpPermissionTargets(input: unknown): string[] {
   }
 
   if (describe) {
-    if (server) {
-      pushTarget(`${server}_${describe}`);
-      pushTarget(`${server}:${describe}`);
-      pushTarget(server);
-    }
-
-    pushTarget(describe);
+    pushMcpToolPermissionTargets(describe, server, configuredServerNames, pushTarget);
     pushTarget("mcp_describe");
     return targets;
   }
@@ -429,22 +355,102 @@ function createMcpPermissionTargets(input: unknown): string[] {
   return targets;
 }
 
+type CompiledPermissionPatterns = readonly CompiledWildcardPattern<PermissionState>[];
+
+type ResolvedPermissions = {
+  globalConfig: GlobalPermissionConfig;
+  agentConfig: AgentPermissions;
+  merged: GlobalPermissionConfig;
+  compiledSpecial: CompiledPermissionPatterns;
+  compiledSkills: CompiledPermissionPatterns;
+  compiledMcp: CompiledPermissionPatterns;
+  bashFilter: BashFilter;
+};
+
+function compilePermissionPatterns(
+  permissions: Record<string, PermissionState> | undefined,
+): CompiledPermissionPatterns {
+  if (!permissions || Object.keys(permissions).length === 0) {
+    return [];
+  }
+
+  return compileWildcardPatterns(permissions);
+}
+
+function findCompiledPermissionMatch(patterns: CompiledPermissionPatterns, name: string) {
+  if (patterns.length === 0) {
+    return null;
+  }
+
+  return findCompiledWildcardMatch(patterns, name);
+}
+
+function findCompiledPermissionMatchForNames(
+  patterns: CompiledPermissionPatterns,
+  names: readonly string[],
+) {
+  if (patterns.length === 0) {
+    return null;
+  }
+
+  return findCompiledWildcardMatchForNames(patterns, names);
+}
+
+type FileCacheEntry<TValue> = {
+  stamp: string;
+  value: TValue;
+};
+
+function getFileStamp(path: string): string {
+  try {
+    return String(statSync(path).mtimeMs);
+  } catch {
+    return "missing";
+  }
+}
+
 export class PermissionManager {
   private readonly globalConfigPath: string;
   private readonly agentsDir: string;
+  private readonly legacyGlobalSettingsPath: string;
+  private readonly globalMcpConfigPath: string;
+  private readonly configuredMcpServerNamesOverride: readonly string[] | null;
+  private globalConfigCache: FileCacheEntry<GlobalPermissionConfig> | null = null;
+  private readonly agentConfigCache = new Map<string, FileCacheEntry<AgentPermissions>>();
+  private readonly resolvedPermissionsCache = new Map<string, FileCacheEntry<ResolvedPermissions>>();
+  private configuredMcpServerNamesCache: FileCacheEntry<readonly string[]> | null = null;
 
-  constructor(options: { globalConfigPath?: string; agentsDir?: string } = {}) {
+  constructor(
+    options: {
+      globalConfigPath?: string;
+      agentsDir?: string;
+      legacyGlobalSettingsPath?: string;
+      globalMcpConfigPath?: string;
+      mcpServerNames?: readonly string[];
+    } = {},
+  ) {
     this.globalConfigPath = options.globalConfigPath || GLOBAL_CONFIG_PATH;
     this.agentsDir = options.agentsDir || AGENTS_DIR;
+    this.legacyGlobalSettingsPath = options.legacyGlobalSettingsPath || LEGACY_GLOBAL_SETTINGS_PATH;
+    this.globalMcpConfigPath = options.globalMcpConfigPath || GLOBAL_MCP_CONFIG_PATH;
+    this.configuredMcpServerNamesOverride = options.mcpServerNames
+      ? [...new Set(options.mcpServerNames.map((name) => name.trim()).filter((name) => name.length > 0))]
+      : null;
   }
 
   private loadGlobalConfig(): GlobalPermissionConfig {
+    const stamp = getFileStamp(this.globalConfigPath);
+    if (this.globalConfigCache?.stamp === stamp) {
+      return this.globalConfigCache.value;
+    }
+
+    let value: GlobalPermissionConfig;
     try {
       const raw = readFileSync(this.globalConfigPath, "utf-8");
       const parsed = JSON.parse(stripJsonComments(raw)) as unknown;
       const normalized = normalizeRawPermission(parsed);
 
-      return {
+      value = {
         defaultPolicy: normalizePolicy(normalized.defaultPolicy),
         tools: normalized.tools || {},
         bash: normalized.bash || {},
@@ -453,8 +459,11 @@ export class PermissionManager {
         special: normalized.special || {},
       };
     } catch {
-      return EMPTY_GLOBAL_CONFIG;
+      value = EMPTY_GLOBAL_CONFIG;
     }
+
+    this.globalConfigCache = { stamp, value };
+    return value;
   }
 
   private loadAgentPermissions(agentName?: string): AgentPermissions {
@@ -463,19 +472,28 @@ export class PermissionManager {
     }
 
     const filePath = join(this.agentsDir, `${agentName}.md`);
+    const stamp = getFileStamp(filePath);
+    const cached = this.agentConfigCache.get(agentName);
+    if (cached?.stamp === stamp) {
+      return cached.value;
+    }
 
+    let value: AgentPermissions;
     try {
       const markdown = readFileSync(filePath, "utf-8");
       const frontmatter = extractFrontmatter(markdown);
       if (!frontmatter) {
-        return {};
+        value = {};
+      } else {
+        const parsed = parseSimpleYamlMap(frontmatter);
+        value = normalizeRawPermission(parsed.permission);
       }
-
-      const parsed = parseSimpleYamlMap(frontmatter);
-      return normalizeRawPermission(parsed.permission);
     } catch {
-      return {};
+      value = {};
     }
+
+    this.agentConfigCache.set(agentName, { stamp, value });
+    return value;
   }
 
   private mergePermissions(globalConfig: GlobalPermissionConfig, agentConfig: AgentPermissions): GlobalPermissionConfig {
@@ -507,18 +525,31 @@ export class PermissionManager {
     };
   }
 
-  private resolvePermissions(agentName?: string): {
-    globalConfig: GlobalPermissionConfig;
-    agentConfig: AgentPermissions;
-    merged: GlobalPermissionConfig;
-  } {
+  private resolvePermissions(agentName?: string): ResolvedPermissions {
+    const cacheKey = agentName || "__global__";
+    const agentStamp = agentName ? getFileStamp(join(this.agentsDir, `${agentName}.md`)) : "missing";
+    const stamp = `${getFileStamp(this.globalConfigPath)}|${agentStamp}`;
+    const cached = this.resolvedPermissionsCache.get(cacheKey);
+    if (cached?.stamp === stamp) {
+      return cached.value;
+    }
+
     const globalConfig = this.loadGlobalConfig();
     const agentConfig = this.loadAgentPermissions(agentName);
-    return {
+    const merged = this.mergePermissions(globalConfig, agentConfig);
+    const bashDefault = agentConfig.tools?.bash || merged.tools?.bash || merged.defaultPolicy.bash;
+    const value: ResolvedPermissions = {
       globalConfig,
       agentConfig,
-      merged: this.mergePermissions(globalConfig, agentConfig),
+      merged,
+      compiledSpecial: compilePermissionPatterns(merged.special),
+      compiledSkills: compilePermissionPatterns(merged.skills),
+      compiledMcp: compilePermissionPatterns(merged.mcp),
+      bashFilter: new BashFilter(merged.bash || {}, bashDefault),
     };
+
+    this.resolvedPermissionsCache.set(cacheKey, { stamp, value });
+    return value;
   }
 
   getBashPermissions(agentName?: string): BashPermissions {
@@ -526,12 +557,28 @@ export class PermissionManager {
     return merged.bash || {};
   }
 
+  private getConfiguredMcpServerNames(): readonly string[] {
+    if (this.configuredMcpServerNamesOverride) {
+      return this.configuredMcpServerNamesOverride;
+    }
+
+    const paths = [this.globalMcpConfigPath, this.legacyGlobalSettingsPath];
+    const stamp = paths.map((path) => `${path}:${getFileStamp(path)}`).join("|");
+    if (this.configuredMcpServerNamesCache?.stamp === stamp) {
+      return this.configuredMcpServerNamesCache.value;
+    }
+
+    const value = getConfiguredMcpServerNamesFromPaths(paths);
+    this.configuredMcpServerNamesCache = { stamp, value };
+    return value;
+  }
+
   checkPermission(toolName: string, input: unknown, agentName?: string): PermissionCheckResult {
-    const { agentConfig, merged } = this.resolvePermissions(agentName);
-    const normalizedToolName = normalizeToolName(toolName);
+    const { agentConfig, merged, compiledSpecial, compiledSkills, compiledMcp, bashFilter } = this.resolvePermissions(agentName);
+    const normalizedToolName = toolName.trim();
 
     if (SPECIAL_PERMISSION_KEYS.has(normalizedToolName)) {
-      const result = findWildcardPermission(merged.special, normalizedToolName);
+      const result = findCompiledPermissionMatch(compiledSpecial, normalizedToolName);
       return {
         toolName,
         state: result?.state || merged.defaultPolicy.special,
@@ -543,7 +590,7 @@ export class PermissionManager {
     if (normalizedToolName === "skill") {
       const skillName = toRecord(input).name;
       if (typeof skillName === "string") {
-        const result = findWildcardPermission(merged.skills, skillName);
+        const result = findCompiledPermissionMatch(compiledSkills, skillName);
         return {
           toolName,
           state: result?.state || merged.defaultPolicy.skills,
@@ -575,9 +622,7 @@ export class PermissionManager {
         };
       }
 
-      const bashDefault = agentBashToolOverride || merged.tools?.bash || merged.defaultPolicy.bash;
-      const filter = new BashFilter(merged.bash || {}, bashDefault);
-      const result = filter.check(command);
+      const result = bashFilter.check(command);
 
       return {
         toolName,
@@ -588,17 +633,21 @@ export class PermissionManager {
       };
     }
 
-    if (isBuiltInToolName(normalizedToolName)) {
-      return {
-        toolName,
-        state: merged.tools?.[normalizedToolName] || merged.defaultPolicy.tools,
-        source: "tool",
-      };
-    }
-
     if (normalizedToolName === "mcp") {
-      const mcpTargets = [...createMcpPermissionTargets(input), "mcp"];
-      const mcpMatch = findWildcardPermissionForNames(merged.mcp, mcpTargets);
+      const mcpTargets = [...createMcpPermissionTargets(input, this.getConfiguredMcpServerNames()), "mcp"];
+      const fallbackTarget = mcpTargets[0] || "mcp";
+      const toolLevelMcpState = merged.tools?.mcp;
+
+      if (toolLevelMcpState === "deny") {
+        return {
+          toolName,
+          state: "deny",
+          target: fallbackTarget,
+          source: "tool",
+        };
+      }
+
+      const mcpMatch = findCompiledPermissionMatchForNames(compiledMcp, mcpTargets);
       if (mcpMatch) {
         return {
           toolName,
@@ -606,6 +655,15 @@ export class PermissionManager {
           matchedPattern: mcpMatch.matchedPattern,
           target: mcpMatch.matchedName,
           source: "mcp",
+        };
+      }
+
+      if (toolLevelMcpState) {
+        return {
+          toolName,
+          state: toolLevelMcpState,
+          target: fallbackTarget,
+          source: "tool",
         };
       }
 
@@ -625,12 +683,20 @@ export class PermissionManager {
       return {
         toolName,
         state: merged.defaultPolicy.mcp || "deny",
-        target: mcpTargets[0],
+        target: fallbackTarget,
         source: "default",
       };
     }
 
-    const mcpMatch = findWildcardPermission(merged.mcp, toolName);
+    if (TOOL_PERMISSION_NAMES.has(normalizedToolName)) {
+      return {
+        toolName,
+        state: merged.tools?.[normalizedToolName] || merged.defaultPolicy.tools,
+        source: "tool",
+      };
+    }
+
+    const mcpMatch = findCompiledPermissionMatch(compiledMcp, toolName);
     if (mcpMatch) {
       return {
         toolName,

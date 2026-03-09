@@ -1,4 +1,4 @@
-type UnknownRecord = Record<string, unknown>;
+import { getNonEmptyString, toRecord } from "./common.js";
 
 export type ToolRegistrationCheckResult =
   | {
@@ -15,23 +15,6 @@ export type ToolRegistrationCheckResult =
       normalizedToolName: string;
       availableToolNames: string[];
     };
-
-function toRecord(value: unknown): UnknownRecord {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return {};
-  }
-
-  return value as UnknownRecord;
-}
-
-function getNonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
 
 function normalizeToolName(toolName: string, aliases: Record<string, string>): string {
   return aliases[toolName] || toolName;

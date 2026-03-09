@@ -3,13 +3,13 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync
 import { homedir } from "node:os";
 import { dirname, join, normalize, resolve, sep } from "node:path";
 
+import { toRecord } from "./common.js";
 import { PermissionManager } from "./permission-manager.js";
 import { sanitizeAvailableToolsSection } from "./system-prompt-sanitizer.js";
 import { checkRequestedToolRegistration, getToolNameFromValue } from "./tool-registry.js";
 import type { PermissionCheckResult, PermissionState } from "./types.js";
 
 const PI_AGENT_DIR = join(homedir(), ".pi", "agent");
-const AGENTS_DIR = join(PI_AGENT_DIR, "agents");
 const SESSIONS_DIR = join(PI_AGENT_DIR, "sessions");
 const SUBAGENT_SESSIONS_DIR = join(PI_AGENT_DIR, "subagent-sessions");
 const PERMISSION_FORWARDING_DIR = join(SESSIONS_DIR, "permission-forwarding");
@@ -23,19 +23,6 @@ const PERMISSION_FORWARDING_TIMEOUT_MS = 10 * 60 * 1000;
 const SUBAGENT_ENV_HINT_KEYS = ["PI_IS_SUBAGENT", "PI_SUBAGENT_SESSION_ID", "PI_AGENT_ROUTER_SUBAGENT"] as const;
 const ORCHESTRATOR_AGENT_NAME = "orchestrator";
 const DELEGATION_TOOL_NAME = "task";
-const TOOL_PERMISSION_MAP: Record<string, string> = {
-  bash: "bash",
-  read: "read",
-  write: "write",
-  edit: "edit",
-  grep: "grep",
-  find: "find",
-  ls: "ls",
-  mcp: "mcp",
-  task: "task",
-};
-const LEGACY_TOOL_ALIASES: Record<string, string> = {};
-const DEFAULT_ALLOWED_MAPPED_TOOLS = new Set<string>();
 
 const AVAILABLE_SKILLS_OPEN_TAG = "<available_skills>";
 const AVAILABLE_SKILLS_CLOSE_TAG = "</available_skills>";
@@ -79,13 +66,6 @@ type PermissionForwardingLocation = {
   responsesDir: string;
   label: "primary" | "legacy";
 };
-
-function toRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return {};
-  }
-  return value as Record<string, unknown>;
-}
 
 function decodeXml(value: string): string {
   return value
@@ -285,115 +265,6 @@ function getEventInput(event: unknown): unknown {
   }
 
   return {};
-}
-
-function isPermissionState(value: unknown): value is PermissionState {
-  return value === "allow" || value === "deny" || value === "ask";
-}
-
-type StackNode = { indent: number; target: Record<string, unknown> };
-
-function parseSimpleYamlMap(input: string): Record<string, unknown> {
-  const root: Record<string, unknown> = {};
-  const stack: StackNode[] = [{ indent: -1, target: root }];
-
-  const lines = input.split(/\r?\n/);
-  for (const rawLine of lines) {
-    if (!rawLine.trim() || rawLine.trimStart().startsWith("#")) {
-      continue;
-    }
-
-    const indent = rawLine.length - rawLine.trimStart().length;
-    const line = rawLine.trim();
-
-    const separatorIndex = line.indexOf(":");
-    if (separatorIndex <= 0) {
-      continue;
-    }
-
-    const key = line.slice(0, separatorIndex).trim().replace(/^['"]|['"]$/g, "");
-    const rawValue = line.slice(separatorIndex + 1).trim();
-
-    while (stack.length > 1 && indent <= stack[stack.length - 1].indent) {
-      stack.pop();
-    }
-
-    const current = stack[stack.length - 1].target;
-
-    if (!rawValue) {
-      const child: Record<string, unknown> = {};
-      current[key] = child;
-      stack.push({ indent, target: child });
-      continue;
-    }
-
-    let scalar = rawValue;
-    if ((scalar.startsWith('"') && scalar.endsWith('"')) || (scalar.startsWith("'") && scalar.endsWith("'"))) {
-      scalar = scalar.slice(1, -1);
-    }
-
-    current[key] = scalar;
-  }
-
-  return root;
-}
-
-function extractFrontmatter(markdown: string): string {
-  const normalized = markdown.replace(/\r\n/g, "\n");
-  if (!normalized.startsWith("---\n")) {
-    return "";
-  }
-
-  const end = normalized.indexOf("\n---", 4);
-  if (end === -1) {
-    return "";
-  }
-
-  return normalized.slice(4, end);
-}
-
-function loadAgentPermissionFields(agentName?: string): Record<string, PermissionState> {
-  if (!agentName) {
-    return {};
-  }
-
-  const filePath = join(AGENTS_DIR, `${agentName}.md`);
-  try {
-    const markdown = readFileSync(filePath, "utf-8");
-    const frontmatter = extractFrontmatter(markdown);
-    if (!frontmatter) {
-      return {};
-    }
-
-    const parsedFrontmatter = parseSimpleYamlMap(frontmatter);
-    const permissionBlock = toRecord(parsedFrontmatter.permission);
-    const permissions: Record<string, PermissionState> = {};
-
-    const collectStates = (value: unknown): void => {
-      const record = toRecord(value);
-      for (const [key, state] of Object.entries(record)) {
-        if (isPermissionState(state)) {
-          permissions[key] = state;
-        }
-      }
-    };
-
-    collectStates(permissionBlock.tools);
-    collectStates(permissionBlock.mcp);
-    collectStates(permissionBlock.bash);
-    collectStates(permissionBlock.skills);
-    collectStates(permissionBlock.special);
-
-    for (const [key, value] of Object.entries(permissionBlock)) {
-      if (isPermissionState(value)) {
-        permissions[key] = value;
-      }
-    }
-
-    return permissions;
-  } catch {
-    return {};
-  }
 }
 
 function normalizeAgentName(value: unknown): string | null {
@@ -910,61 +781,8 @@ async function confirmPermission(ctx: ExtensionContext, message: string): Promis
   return waitForForwardedPermissionApproval(ctx, message);
 }
 
-function getMappedPermissionState(toolName: string, permissionFields: Record<string, PermissionState>): PermissionState | undefined {
-  const normalizedToolName = LEGACY_TOOL_ALIASES[toolName] || toolName;
-  const directState = permissionFields[normalizedToolName];
-  if (directState) {
-    return directState;
-  }
-
-  const permissionKey = TOOL_PERMISSION_MAP[normalizedToolName];
-  if (!permissionKey) {
-    return undefined;
-  }
-
-  const mappedState = permissionFields[permissionKey];
-  if (mappedState) {
-    return mappedState;
-  }
-
-  for (const [legacyToolName, canonicalToolName] of Object.entries(LEGACY_TOOL_ALIASES)) {
-    if (canonicalToolName !== normalizedToolName) {
-      continue;
-    }
-
-    const legacyState = permissionFields[legacyToolName];
-    if (legacyState) {
-      return legacyState;
-    }
-  }
-
-  if (DEFAULT_ALLOWED_MAPPED_TOOLS.has(permissionKey)) {
-    return "allow";
-  }
-
-  return undefined;
-}
-
-function createMappedResult(toolName: string, input: unknown, state: PermissionState): PermissionCheckResult {
-  const result: PermissionCheckResult = {
-    toolName,
-    state,
-    source: "tool",
-  };
-
-  if (toolName === "bash") {
-    const command = toRecord(input).command;
-    if (typeof command === "string") {
-      result.command = command;
-    }
-  }
-
-  return result;
-}
-
 export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   let permissionManager = new PermissionManager();
-  const cachedAgentPermissions = new Map<string, Record<string, PermissionState>>();
   let activeSkillEntries: SkillPromptEntry[] = [];
   let lastKnownActiveAgentName: string | null = null;
   let permissionForwardingContext: ExtensionContext | null = null;
@@ -1021,30 +839,9 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     return lastKnownActiveAgentName;
   };
 
-  const getAgentPermissionFields = (agentName: string | null): Record<string, PermissionState> => {
-    if (!agentName) {
-      return {};
-    }
-
-    const cached = cachedAgentPermissions.get(agentName);
-    if (cached) {
-      return cached;
-    }
-
-    const loaded = loadAgentPermissionFields(agentName);
-    cachedAgentPermissions.set(agentName, loaded);
-    return loaded;
-  };
-
   const shouldExposeTool = (toolName: string, agentName: string | null): boolean => {
     if (toolName === DELEGATION_TOOL_NAME && !isDelegationAllowedAgent(agentName)) {
       return false;
-    }
-
-    const permissionFields = getAgentPermissionFields(agentName);
-    const mappedState = getMappedPermissionState(toolName, permissionFields);
-    if (mappedState) {
-      return mappedState !== "deny";
     }
 
     const check = permissionManager.checkPermission(toolName, {}, agentName ?? undefined);
@@ -1053,7 +850,6 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     permissionManager = new PermissionManager();
-    cachedAgentPermissions.clear();
     activeSkillEntries = [];
     lastKnownActiveAgentName = getActiveAgentName(ctx);
     startForwardedPermissionPolling(ctx);
@@ -1142,14 +938,13 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     startForwardedPermissionPolling(ctx);
     const agentName = resolveAgentName(ctx);
-    const permissionFields = getAgentPermissionFields(agentName);
     const toolName = getEventToolName(event);
 
     if (!toolName) {
       return { block: true, reason: formatMissingToolNameReason() };
     }
 
-    const registrationCheck = checkRequestedToolRegistration(toolName, pi.getAllTools(), LEGACY_TOOL_ALIASES);
+    const registrationCheck = checkRequestedToolRegistration(toolName, pi.getAllTools());
     if (registrationCheck.status === "missing-tool-name") {
       return { block: true, reason: formatMissingToolNameReason() };
     }
@@ -1196,97 +991,24 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       }
     }
 
-    if (isToolCallEventType("bash", event)) {
-      const command = event.input.command;
-      const mappedBashState = getMappedPermissionState("bash", permissionFields);
-      let mappedAskApproved = false;
-
-      if (mappedBashState) {
-        const mappedCheck = createMappedResult("bash", { command }, mappedBashState);
-
-        if (mappedCheck.state === "deny") {
-          return { block: true, reason: formatDenyReason(mappedCheck, agentName ?? undefined) };
-        }
-
-        if (mappedCheck.state === "ask") {
-          if (!canRequestPermissionConfirmation(ctx)) {
-            return {
-              block: true,
-              reason: `Running bash command '${command}' requires approval, but no interactive UI is available.`,
-            };
-          }
-
-          const approved = await confirmPermission(ctx, formatAskPrompt(mappedCheck, agentName ?? undefined));
-          if (!approved) {
-            return { block: true, reason: formatUserDeniedReason(mappedCheck) };
-          }
-          mappedAskApproved = true;
-        }
-      }
-
-      const check = permissionManager.checkPermission("bash", { command }, agentName ?? undefined);
-
-      if (check.state === "deny") {
-        return { block: true, reason: formatDenyReason(check, agentName ?? undefined) };
-      }
-
-      if (check.state === "ask") {
-        if (mappedAskApproved || mappedBashState === "allow") {
-          return {};
-        }
-
-        if (!canRequestPermissionConfirmation(ctx)) {
-          return {
-            block: true,
-            reason: `Running bash command '${command}' requires approval, but no interactive UI is available.`,
-          };
-        }
-
-        const approved = await confirmPermission(ctx, formatAskPrompt(check, agentName ?? undefined));
-        if (!approved) {
-          return { block: true, reason: formatUserDeniedReason(check) };
-        }
-      }
-
-      return {};
-    }
-
-    const mappedState = getMappedPermissionState(toolName, permissionFields);
-    if (mappedState) {
-      const mappedCheck = createMappedResult(toolName, getEventInput(event), mappedState);
-
-      if (mappedCheck.state === "deny") {
-        return { block: true, reason: formatDenyReason(mappedCheck, agentName ?? undefined) };
-      }
-
-      if (mappedCheck.state === "ask") {
-        if (!canRequestPermissionConfirmation(ctx)) {
-          return {
-            block: true,
-            reason: `Using tool '${toolName}' requires approval, but no interactive UI is available.`,
-          };
-        }
-
-        const approved = await confirmPermission(ctx, formatAskPrompt(mappedCheck, agentName ?? undefined));
-        if (!approved) {
-          return { block: true, reason: formatUserDeniedReason(mappedCheck) };
-        }
-      }
-
-      return {};
-    }
-
-    const check = permissionManager.checkPermission(toolName, getEventInput(event), agentName ?? undefined);
+    const input = getEventInput(event);
+    const check = permissionManager.checkPermission(toolName, input, agentName ?? undefined);
 
     if (check.state === "deny") {
       return { block: true, reason: formatDenyReason(check, agentName ?? undefined) };
     }
 
     if (check.state === "ask") {
+      const unavailableReason = toolName === "bash" && isToolCallEventType("bash", event)
+        ? `Running bash command '${event.input.command}' requires approval, but no interactive UI is available.`
+        : toolName === "mcp"
+          ? "Using tool 'mcp' requires approval, but no interactive UI is available."
+          : `Using tool '${toolName}' requires approval, but no interactive UI is available.`;
+
       if (!canRequestPermissionConfirmation(ctx)) {
         return {
           block: true,
-          reason: `Using tool '${toolName}' requires approval, but no interactive UI is available.`,
+          reason: unavailableReason,
         };
       }
 
