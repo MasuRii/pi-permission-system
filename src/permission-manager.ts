@@ -585,6 +585,59 @@ export class PermissionManager {
     return value;
   }
 
+  /**
+   * Get the tool-level permission state for a tool, without considering command-level rules.
+   * This is used for tool injection decisions where we need to know if a tool is allowed/denied
+   * at the tool level before checking specific command permissions.
+   *
+   * @param toolName - The name of the tool (e.g., "bash", "read", "write")
+   * @param agentName - Optional agent name to check agent-specific permissions
+   * @returns The permission state for the tool at the tool level
+   */
+  getToolPermission(toolName: string, agentName?: string): PermissionState {
+    const { merged } = this.resolvePermissions(agentName);
+    const normalizedToolName = toolName.trim();
+
+    // Handle special permission keys (doom_loop, external_directory)
+    if (SPECIAL_PERMISSION_KEYS.has(normalizedToolName)) {
+      return merged.defaultPolicy.special;
+    }
+
+    // Handle skill tool
+    if (normalizedToolName === "skill") {
+      return merged.defaultPolicy.skills;
+    }
+
+    // For bash tool, return the tool-level permission (not command-level)
+    if (normalizedToolName === "bash") {
+      return merged.tools?.bash || merged.defaultPolicy.bash;
+    }
+
+    // Handle mcp tool
+    if (normalizedToolName === "mcp") {
+      return merged.tools?.mcp || merged.defaultPolicy.mcp;
+    }
+
+    // Handle other tool permission names
+    if (TOOL_PERMISSION_NAMES.has(normalizedToolName)) {
+      return merged.tools?.[normalizedToolName] || merged.defaultPolicy.tools;
+    }
+
+    // For MCP tools (qualified names like "server_tool"), check mcp permissions
+    if (normalizedToolName.includes("_")) {
+      const mcpMatch = findCompiledPermissionMatch(
+        compilePermissionPatternsFromSources(this.loadGlobalConfig().mcp, this.loadAgentPermissions(agentName).mcp),
+        normalizedToolName
+      );
+      if (mcpMatch) {
+        return mcpMatch.state;
+      }
+    }
+
+    // Default to the tools default policy
+    return merged.defaultPolicy.tools;
+  }
+
   checkPermission(toolName: string, input: unknown, agentName?: string): PermissionCheckResult {
     const { agentConfig, merged, compiledSpecial, compiledSkills, compiledMcp, bashFilter } = this.resolvePermissions(agentName);
     const normalizedToolName = toolName.trim();

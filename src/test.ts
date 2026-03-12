@@ -530,4 +530,70 @@ runTest("Tool registry blocks unregistered tools and handles aliases", () => {
   assert.equal(missingNameCheck.status, "missing-tool-name");
 });
 
+runTest("getToolPermission returns tool-level deny for agent with bash: deny", () => {
+  const { manager, cleanup } = createManager(
+    {
+      defaultPolicy: {
+        tools: "ask",
+        bash: "ask",
+        mcp: "ask",
+        skills: "ask",
+        special: "ask",
+      },
+    },
+    {
+      orchestrator: `---
+name: orchestrator
+permission:
+  tools:
+    bash: deny
+    read: deny
+    task: allow
+---
+`,
+    },
+  );
+
+  try {
+    // Tool-level check for bash should return deny for orchestrator
+    const bashPermission = manager.getToolPermission("bash", "orchestrator");
+    assert.equal(bashPermission, "deny");
+
+    // Tool-level check for task should return allow
+    const taskPermission = manager.getToolPermission("task", "orchestrator");
+    assert.equal(taskPermission, "allow");
+
+    // Tool-level check for read should return deny
+    const readPermission = manager.getToolPermission("read", "orchestrator");
+    assert.equal(readPermission, "deny");
+
+    // When no agent specified, should fall back to default policy
+    const defaultBashPermission = manager.getToolPermission("bash");
+    assert.equal(defaultBashPermission, "ask");
+
+    // Global config tools setting should work
+    const { manager: manager2, cleanup: cleanup2 } = createManager({
+      defaultPolicy: {
+        tools: "deny",
+        bash: "ask",
+        mcp: "ask",
+        skills: "ask",
+        special: "ask",
+      },
+      tools: {
+        bash: "allow",
+      },
+    });
+
+    try {
+      const globalBashPermission = manager2.getToolPermission("bash");
+      assert.equal(globalBashPermission, "allow");
+    } finally {
+      cleanup2();
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 console.log("All permission system tests passed.");

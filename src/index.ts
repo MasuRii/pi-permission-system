@@ -844,8 +844,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       return false;
     }
 
-    const check = permissionManager.checkPermission(toolName, {}, agentName ?? undefined);
-    return check.state !== "deny";
+    // Use tool-level permission check for tool injection decisions
+    // This ensures that agent-specific tool deny rules (e.g., bash: deny) are respected
+    // before any command-level permissions are considered
+    const toolPermission = permissionManager.getToolPermission(toolName, agentName ?? undefined);
+    return toolPermission !== "deny";
   };
 
   pi.on("session_start", async (_event, ctx) => {

@@ -181,18 +181,13 @@ Controls built-in tools by exact name (no wildcards):
 
 ### `bash`
 
-Command patterns use `*` wildcards and match against the full command string. Patterns are sorted by specificity:
-
-1. Fewer wildcards wins
-2. Longer literal text wins  
-3. Longer overall pattern wins
+Command patterns use `*` wildcards and match against the full command string. If multiple patterns match, the **last matching rule wins**.
 
 ```jsonc
 {
   "bash": {
-    "git status": "allow",
-    "git diff": "allow",
     "git *": "ask",
+    "git status": "allow",
     "rm -rf *": "deny"
   }
 }
