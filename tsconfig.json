@@ -7,8 +7,7 @@
     "strict": false,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "allowSyntheticDefaultImports": true,
-    "types": ["node"]
+    "allowSyntheticDefaultImports": true
   },
   "include": ["index.ts", "src/**/*.ts", "src/**/*.d.ts"],
   "exclude": ["node_modules"]

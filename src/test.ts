@@ -4,11 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { BashFilter } from "./bash-filter.js";
-import { DEFAULT_EXTENSION_CONFIG, loadPermissionSystemConfig } from "./extension-config.js";
+import { DEFAULT_EXTENSION_CONFIG, loadPermissionSystemConfig, savePermissionSystemConfig } from "./extension-config.js";
 import { createPermissionSystemLogger } from "./logging.js";
+import {
+  createPermissionForwardingLocation,
+  isForwardedPermissionRequestForSession,
+  resolvePermissionForwardingTargetSessionId,
+} from "./permission-forwarding.js";
 import { PermissionManager } from "./permission-manager.js";
 import { checkRequestedToolRegistration, getToolNameFromValue } from "./tool-registry.js";
 import type { GlobalPermissionConfig } from "./types.js";
+import { canResolveAskPermissionRequest, shouldAutoApprovePermissionState } from "./yolo-mode.js";
 
 type CreateManagerOptions = {
   mcpServerNames?: readonly string[];
@@ -49,7 +55,7 @@ function runTest(name: string, testFn: () => void): void {
   console.log(`[PASS] ${name}`);
 }
 
-runTest("Permission-system extension config defaults debug off and review log on", () => {
+runTest("Permission-system extension config defaults debug off, review log on, and yolo mode off", () => {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-config-"));
   const configPath = join(baseDir, "config.json");
 
@@ -63,9 +69,133 @@ runTest("Permission-system extension config defaults debug off and review log on
     const raw = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
     assert.equal(raw.debugLog, false);
     assert.equal(raw.permissionReviewLog, true);
+    assert.equal(raw.yoloMode, false);
   } finally {
     rmSync(baseDir, { recursive: true, force: true });
   }
+});
+
+runTest("Permission-system extension config loads yolo mode when explicitly enabled", () => {
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-config-yolo-"));
+  const configPath = join(baseDir, "config.json");
+
+  try {
+    writeFileSync(
+      configPath,
+      `${JSON.stringify({
+        debugLog: true,
+        permissionReviewLog: false,
+        yoloMode: true,
+      }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const result = loadPermissionSystemConfig(configPath);
+    assert.equal(result.created, false);
+    assert.equal(result.warning, undefined);
+    assert.deepEqual(result.config, {
+      debugLog: true,
+      permissionReviewLog: false,
+      yoloMode: true,
+    });
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+runTest("Permission-system extension config normalizes invalid persisted values back to defaults", () => {
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-config-invalid-"));
+  const configPath = join(baseDir, "config.json");
+
+  try {
+    writeFileSync(
+      configPath,
+      `${JSON.stringify({
+        debugLog: "true",
+        permissionReviewLog: null,
+        yoloMode: 1,
+      }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const result = loadPermissionSystemConfig(configPath);
+    assert.equal(result.created, false);
+    assert.equal(result.warning, undefined);
+    assert.deepEqual(result.config, DEFAULT_EXTENSION_CONFIG);
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+runTest("Permission-system extension config save persists normalized config", () => {
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-config-save-"));
+  const configPath = join(baseDir, "config.json");
+
+  try {
+    const saved = savePermissionSystemConfig(
+      {
+        debugLog: true,
+        permissionReviewLog: false,
+        yoloMode: true,
+      },
+      configPath,
+    );
+
+    assert.equal(saved.success, true);
+
+    const result = loadPermissionSystemConfig(configPath);
+    assert.equal(result.warning, undefined);
+    assert.deepEqual(result.config, {
+      debugLog: true,
+      permissionReviewLog: false,
+      yoloMode: true,
+    });
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+runTest("Yolo mode only auto-approves ask-state permissions", () => {
+  assert.equal(shouldAutoApprovePermissionState("ask", DEFAULT_EXTENSION_CONFIG), false);
+  assert.equal(
+    shouldAutoApprovePermissionState("ask", { ...DEFAULT_EXTENSION_CONFIG, yoloMode: true }),
+    true,
+  );
+  assert.equal(
+    shouldAutoApprovePermissionState("deny", { ...DEFAULT_EXTENSION_CONFIG, yoloMode: true }),
+    false,
+  );
+  assert.equal(
+    shouldAutoApprovePermissionState("allow", { ...DEFAULT_EXTENSION_CONFIG, yoloMode: true }),
+    false,
+  );
+});
+
+runTest("Yolo mode resolves ask permissions without UI or delegation forwarding", () => {
+  assert.equal(
+    canResolveAskPermissionRequest({
+      config: DEFAULT_EXTENSION_CONFIG,
+      hasUI: false,
+      isSubagent: false,
+    }),
+    false,
+  );
+  assert.equal(
+    canResolveAskPermissionRequest({
+      config: { ...DEFAULT_EXTENSION_CONFIG, yoloMode: true },
+      hasUI: false,
+      isSubagent: false,
+    }),
+    true,
+  );
+  assert.equal(
+    canResolveAskPermissionRequest({
+      config: DEFAULT_EXTENSION_CONFIG,
+      hasUI: false,
+      isSubagent: true,
+    }),
+    true,
+  );
 });
 
 runTest("Permission-system logger respects debug toggle and keeps review log enabled by default", () => {
@@ -744,6 +874,84 @@ runTest("getToolPermission supports arbitrary extension tool names", () => {
   } finally {
     cleanup();
   }
+});
+
+runTest("Yolo mode bypasses delegated ask routing when no parent forwarding target is available", () => {
+  const targetSessionId = resolvePermissionForwardingTargetSessionId({
+    hasUI: false,
+    isSubagent: true,
+    currentSessionId: "child-session",
+    env: {},
+  });
+
+  assert.equal(targetSessionId, null);
+  assert.equal(
+    canResolveAskPermissionRequest({
+      config: { ...DEFAULT_EXTENSION_CONFIG, yoloMode: true },
+      hasUI: false,
+      isSubagent: true,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldAutoApprovePermissionState("ask", { ...DEFAULT_EXTENSION_CONFIG, yoloMode: true }),
+    true,
+  );
+});
+
+runTest("Permission forwarding resolves the parent interactive session from subagent runtime env", () => {
+  const targetSessionId = resolvePermissionForwardingTargetSessionId({
+    hasUI: false,
+    isSubagent: true,
+    currentSessionId: "child-session",
+    env: {
+      PI_AGENT_ROUTER_PARENT_SESSION_ID: "parent-session",
+    },
+  });
+
+  assert.equal(targetSessionId, "parent-session");
+});
+
+runTest("Permission forwarding does not guess a target session when subagent runtime env is missing", () => {
+  const targetSessionId = resolvePermissionForwardingTargetSessionId({
+    hasUI: false,
+    isSubagent: true,
+    currentSessionId: "child-session",
+    env: {},
+  });
+
+  assert.equal(targetSessionId, null);
+});
+
+runTest("Permission forwarding uses session-scoped directories per interactive session", () => {
+  const forwardingRoot = join(tmpdir(), "pi-permission-system-forwarding-root");
+  const sessionA = createPermissionForwardingLocation(forwardingRoot, "session-a");
+  const sessionB = createPermissionForwardingLocation(forwardingRoot, "session-b");
+
+  assert.notEqual(sessionA.sessionRootDir, sessionB.sessionRootDir);
+  assert.notEqual(sessionA.requestsDir, sessionB.requestsDir);
+  assert.notEqual(sessionA.responsesDir, sessionB.responsesDir);
+});
+
+runTest("Permission forwarding request routing only matches the intended UI session", () => {
+  assert.equal(
+    isForwardedPermissionRequestForSession({ targetSessionId: "session-a" }, "session-a"),
+    true,
+  );
+  assert.equal(
+    isForwardedPermissionRequestForSession({ targetSessionId: "session-a" }, "session-b"),
+    false,
+  );
+});
+
+runTest("Permission forwarding rejects unresolved sentinel session ids", () => {
+  const targetSessionId = resolvePermissionForwardingTargetSessionId({
+    hasUI: true,
+    isSubagent: false,
+    currentSessionId: "unknown",
+  });
+
+  assert.equal(targetSessionId, null);
 });
 
 console.log("All permission system tests passed.");

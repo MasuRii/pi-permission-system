@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,6 +9,7 @@ export const EXTENSION_ID = "pi-permission-system";
 export interface PermissionSystemExtensionConfig {
   debugLog: boolean;
   permissionReviewLog: boolean;
+  yoloMode: boolean;
 }
 
 export interface PermissionSystemConfigLoadResult {
@@ -17,9 +18,15 @@ export interface PermissionSystemConfigLoadResult {
   warning?: string;
 }
 
+export interface PermissionSystemConfigSaveResult {
+  success: boolean;
+  error?: string;
+}
+
 export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
   debugLog: false,
   permissionReviewLog: true,
+  yoloMode: false,
 };
 
 export function resolveExtensionRoot(moduleUrl = import.meta.url): string {
@@ -36,6 +43,7 @@ function cloneDefaultConfig(): PermissionSystemExtensionConfig {
   return {
     debugLog: DEFAULT_EXTENSION_CONFIG.debugLog,
     permissionReviewLog: DEFAULT_EXTENSION_CONFIG.permissionReviewLog,
+    yoloMode: DEFAULT_EXTENSION_CONFIG.yoloMode,
   };
 }
 
@@ -43,11 +51,12 @@ function createDefaultConfigContent(): string {
   return `${JSON.stringify(DEFAULT_EXTENSION_CONFIG, null, 2)}\n`;
 }
 
-function normalizeConfig(raw: unknown): PermissionSystemExtensionConfig {
+export function normalizePermissionSystemConfig(raw: unknown): PermissionSystemExtensionConfig {
   const record = toRecord(raw);
   return {
     debugLog: record.debugLog === true,
     permissionReviewLog: record.permissionReviewLog !== false,
+    yoloMode: record.yoloMode === true,
   };
 }
 
@@ -79,7 +88,7 @@ export function loadPermissionSystemConfig(configPath = CONFIG_PATH): Permission
   try {
     const raw = readFileSync(configPath, "utf-8");
     const parsed = JSON.parse(raw) as unknown;
-    const config = normalizeConfig(parsed);
+    const config = normalizePermissionSystemConfig(parsed);
     return {
       config,
       created: ensureResult.created,
@@ -93,6 +102,39 @@ export function loadPermissionSystemConfig(configPath = CONFIG_PATH): Permission
       warning: ensureResult.warning ?? `Failed to read permission-system config at '${configPath}': ${message}`,
     };
   }
+}
+
+export function savePermissionSystemConfig(
+  config: PermissionSystemExtensionConfig,
+  configPath = CONFIG_PATH,
+): PermissionSystemConfigSaveResult {
+  const normalized = normalizePermissionSystemConfig(config);
+  const tmpPath = `${configPath}.tmp`;
+
+  try {
+    ensureConfigDirectory(configPath);
+    writeFileSync(tmpPath, `${JSON.stringify(normalized, null, 2)}\n`, "utf-8");
+    renameSync(tmpPath, configPath);
+    return { success: true };
+  } catch (error) {
+    try {
+      if (existsSync(tmpPath)) {
+        unlinkSync(tmpPath);
+      }
+    } catch {
+      // Ignore cleanup failures.
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      success: false,
+      error: `Failed to save permission-system config at '${configPath}': ${message}`,
+    };
+  }
+}
+
+export function getPermissionSystemConfigPath(configPath = CONFIG_PATH): string {
+  return configPath;
 }
 
 export function ensurePermissionSystemLogsDirectory(logsDir = LOGS_DIR): string | undefined {
