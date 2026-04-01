@@ -1,6 +1,6 @@
 {
   "name": "pi-permission-system",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Permission enforcement extension for the Pi coding agent.",
   "type": "module",
   "main": "./index.ts",
