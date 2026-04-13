@@ -33,6 +33,8 @@ Place this folder in one of the following locations:
 
 Pi auto-discovers extensions in these paths.
 
+> **Tip:** All `~/.pi/agent` paths shown in this document are defaults. If the `PI_CODING_AGENT_DIR` environment variable is set, pi uses that directory instead. The extension automatically follows pi's `getAgentDir()` helper, so global policy files, per-agent overrides, session directories, and extension installation paths all resolve under the configured agent directory.
+
 ## Usage
 
 ### Quick Start
