@@ -881,6 +881,33 @@ async function confirmPermission(ctx: ExtensionContext, message: string): Promis
   return waitForForwardedPermissionApproval(ctx, message);
 }
 
+function derivePiProjectPaths(cwd: string | undefined | null): {
+  projectGlobalConfigPath: string;
+  projectAgentsDir: string;
+} | null {
+  if (!cwd) {
+    return null;
+  }
+
+  const projectAgentRoot = join(cwd, ".pi", "agent");
+  return {
+    projectGlobalConfigPath: join(projectAgentRoot, "pi-permissions.jsonc"),
+    projectAgentsDir: join(projectAgentRoot, "agents"),
+  };
+}
+
+function createPermissionManagerForCwd(cwd: string | undefined | null): PermissionManager {
+  const projectPaths = derivePiProjectPaths(cwd);
+  if (!projectPaths) {
+    return new PermissionManager();
+  }
+
+  return new PermissionManager({
+    projectGlobalConfigPath: projectPaths.projectGlobalConfigPath,
+    projectAgentsDir: projectPaths.projectAgentsDir,
+  });
+}
+
 export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   let permissionManager = new PermissionManager();
   let activeSkillEntries: SkillPromptEntry[] = [];
@@ -1133,7 +1160,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   pi.on("session_start", async (_event, ctx) => {
     runtimeContext = ctx;
     refreshExtensionConfig(ctx);
-    permissionManager = new PermissionManager();
+    permissionManager = createPermissionManagerForCwd(ctx.cwd);
     activeSkillEntries = [];
     lastKnownActiveAgentName = getActiveAgentName(ctx);
     startForwardedPermissionPolling(ctx);
@@ -1142,6 +1169,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   pi.on("session_switch", async (_event, ctx) => {
     runtimeContext = ctx;
     refreshExtensionConfig(ctx);
+    permissionManager = createPermissionManagerForCwd(ctx.cwd);
     activeSkillEntries = [];
     lastKnownActiveAgentName = getActiveAgentName(ctx);
     startForwardedPermissionPolling(ctx);

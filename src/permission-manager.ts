@@ -425,11 +425,15 @@ function getFileStamp(path: string): string {
 export class PermissionManager {
   private readonly globalConfigPath: string;
   private readonly agentsDir: string;
+  private readonly projectGlobalConfigPath: string | null;
+  private readonly projectAgentsDir: string | null;
   private readonly legacyGlobalSettingsPath: string;
   private readonly globalMcpConfigPath: string;
   private readonly configuredMcpServerNamesOverride: readonly string[] | null;
   private globalConfigCache: FileCacheEntry<GlobalPermissionConfig> | null = null;
+  private projectGlobalConfigCache: FileCacheEntry<AgentPermissions> | null = null;
   private readonly agentConfigCache = new Map<string, FileCacheEntry<AgentPermissions>>();
+  private readonly projectAgentConfigCache = new Map<string, FileCacheEntry<AgentPermissions>>();
   private readonly resolvedPermissionsCache = new Map<string, FileCacheEntry<ResolvedPermissions>>();
   private configuredMcpServerNamesCache: FileCacheEntry<readonly string[]> | null = null;
 
@@ -437,6 +441,8 @@ export class PermissionManager {
     options: {
       globalConfigPath?: string;
       agentsDir?: string;
+      projectGlobalConfigPath?: string;
+      projectAgentsDir?: string;
       legacyGlobalSettingsPath?: string;
       globalMcpConfigPath?: string;
       mcpServerNames?: readonly string[];
@@ -444,6 +450,8 @@ export class PermissionManager {
   ) {
     this.globalConfigPath = options.globalConfigPath || defaultGlobalConfigPath();
     this.agentsDir = options.agentsDir || defaultAgentsDir();
+    this.projectGlobalConfigPath = options.projectGlobalConfigPath || null;
+    this.projectAgentsDir = options.projectAgentsDir || null;
     this.legacyGlobalSettingsPath = options.legacyGlobalSettingsPath || defaultLegacyGlobalSettingsPath();
     this.globalMcpConfigPath = options.globalMcpConfigPath || defaultGlobalMcpConfigPath();
     this.configuredMcpServerNamesOverride = options.mcpServerNames
@@ -479,14 +487,41 @@ export class PermissionManager {
     return value;
   }
 
-  private loadAgentPermissions(agentName?: string): AgentPermissions {
-    if (!agentName) {
+  private loadProjectGlobalConfig(): AgentPermissions {
+    if (!this.projectGlobalConfigPath) {
       return {};
     }
 
-    const filePath = join(this.agentsDir, `${agentName}.md`);
+    const stamp = getFileStamp(this.projectGlobalConfigPath);
+    if (this.projectGlobalConfigCache?.stamp === stamp) {
+      return this.projectGlobalConfigCache.value;
+    }
+
+    let value: AgentPermissions;
+    try {
+      const raw = readFileSync(this.projectGlobalConfigPath, "utf-8");
+      const parsed = JSON.parse(stripJsonComments(raw)) as unknown;
+      value = normalizeRawPermission(parsed);
+    } catch {
+      value = {};
+    }
+
+    this.projectGlobalConfigCache = { stamp, value };
+    return value;
+  }
+
+  private loadAgentPermissionsFrom(
+    dir: string | null,
+    cache: Map<string, FileCacheEntry<AgentPermissions>>,
+    agentName?: string,
+  ): AgentPermissions {
+    if (!dir || !agentName) {
+      return {};
+    }
+
+    const filePath = join(dir, `${agentName}.md`);
     const stamp = getFileStamp(filePath);
-    const cached = this.agentConfigCache.get(agentName);
+    const cached = cache.get(agentName);
     if (cached?.stamp === stamp) {
       return cached.value;
     }
@@ -505,8 +540,16 @@ export class PermissionManager {
       value = {};
     }
 
-    this.agentConfigCache.set(agentName, { stamp, value });
+    cache.set(agentName, { stamp, value });
     return value;
+  }
+
+  private loadAgentPermissions(agentName?: string): AgentPermissions {
+    return this.loadAgentPermissionsFrom(this.agentsDir, this.agentConfigCache, agentName);
+  }
+
+  private loadProjectAgentPermissions(agentName?: string): AgentPermissions {
+    return this.loadAgentPermissionsFrom(this.projectAgentsDir, this.projectAgentConfigCache, agentName);
   }
 
   private mergePermissions(globalConfig: GlobalPermissionConfig, agentConfig: AgentPermissions): GlobalPermissionConfig {
@@ -541,24 +584,61 @@ export class PermissionManager {
   private resolvePermissions(agentName?: string): ResolvedPermissions {
     const cacheKey = agentName || "__global__";
     const agentStamp = agentName ? getFileStamp(join(this.agentsDir, `${agentName}.md`)) : "missing";
-    const stamp = `${getFileStamp(this.globalConfigPath)}|${agentStamp}`;
+    const projectStamp = this.projectGlobalConfigPath ? getFileStamp(this.projectGlobalConfigPath) : "none";
+    const projectAgentStamp =
+      this.projectAgentsDir && agentName ? getFileStamp(join(this.projectAgentsDir, `${agentName}.md`)) : "none";
+    const stamp = `${getFileStamp(this.globalConfigPath)}|${projectStamp}|${agentStamp}|${projectAgentStamp}`;
     const cached = this.resolvedPermissionsCache.get(cacheKey);
     if (cached?.stamp === stamp) {
       return cached.value;
     }
 
     const globalConfig = this.loadGlobalConfig();
+    const projectConfig = this.loadProjectGlobalConfig();
     const agentConfig = this.loadAgentPermissions(agentName);
-    const merged = this.mergePermissions(globalConfig, agentConfig);
-    const bashDefault = agentConfig.tools?.bash || merged.tools?.bash || merged.defaultPolicy.bash;
+    const projectAgentConfig = this.loadProjectAgentPermissions(agentName);
+
+    const mergedWithProject = this.mergePermissions(globalConfig, projectConfig);
+    const mergedWithAgent = this.mergePermissions(mergedWithProject, agentConfig);
+    const merged = this.mergePermissions(mergedWithAgent, projectAgentConfig);
+
+    const bashDefault =
+      projectAgentConfig.tools?.bash
+      || agentConfig.tools?.bash
+      || projectConfig.tools?.bash
+      || merged.tools?.bash
+      || merged.defaultPolicy.bash;
     const value: ResolvedPermissions = {
       globalConfig,
       agentConfig,
       merged,
-      compiledSpecial: compilePermissionPatternsFromSources(globalConfig.special, agentConfig.special),
-      compiledSkills: compilePermissionPatternsFromSources(globalConfig.skills, agentConfig.skills),
-      compiledMcp: compilePermissionPatternsFromSources(globalConfig.mcp, agentConfig.mcp),
-      bashFilter: new BashFilter(compilePermissionPatternsFromSources(globalConfig.bash, agentConfig.bash), bashDefault),
+      compiledSpecial: compilePermissionPatternsFromSources(
+        globalConfig.special,
+        projectConfig.special,
+        agentConfig.special,
+        projectAgentConfig.special,
+      ),
+      compiledSkills: compilePermissionPatternsFromSources(
+        globalConfig.skills,
+        projectConfig.skills,
+        agentConfig.skills,
+        projectAgentConfig.skills,
+      ),
+      compiledMcp: compilePermissionPatternsFromSources(
+        globalConfig.mcp,
+        projectConfig.mcp,
+        agentConfig.mcp,
+        projectAgentConfig.mcp,
+      ),
+      bashFilter: new BashFilter(
+        compilePermissionPatternsFromSources(
+          globalConfig.bash,
+          projectConfig.bash,
+          agentConfig.bash,
+          projectAgentConfig.bash,
+        ),
+        bashDefault,
+      ),
     };
 
     this.resolvedPermissionsCache.set(cacheKey, { stamp, value });

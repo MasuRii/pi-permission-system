@@ -15,7 +15,7 @@ import { PermissionManager } from "./permission-manager.js";
 import { checkRequestedToolRegistration, getToolNameFromValue } from "./tool-registry.js";
 import { getPermissionSystemStatus } from "./status.js";
 import { sanitizeAvailableToolsSection } from "./system-prompt-sanitizer.js";
-import type { GlobalPermissionConfig } from "./types.js";
+import type { AgentPermissions, GlobalPermissionConfig } from "./types.js";
 import { canResolveAskPermissionRequest, shouldAutoApprovePermissionState } from "./yolo-mode.js";
 
 type CreateManagerOptions = {
@@ -1020,6 +1020,265 @@ runTest("Permission forwarding rejects unresolved sentinel session ids", () => {
   });
 
   assert.equal(targetSessionId, null);
+});
+
+type CreateManagerWithProjectOptions = CreateManagerOptions & {
+  projectConfig?: AgentPermissions;
+  projectAgentFiles?: Record<string, string>;
+};
+
+function createManagerWithProject(
+  config: GlobalPermissionConfig,
+  agentFiles: Record<string, string> = {},
+  options: CreateManagerWithProjectOptions = {},
+) {
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-proj-test-"));
+  const globalConfigPath = join(baseDir, "pi-permissions.jsonc");
+  const agentsDir = join(baseDir, "agents");
+  const projectRoot = join(baseDir, "project");
+  const projectGlobalConfigPath = join(projectRoot, "pi-permissions.jsonc");
+  const projectAgentsDir = join(projectRoot, "agents");
+
+  mkdirSync(agentsDir, { recursive: true });
+  mkdirSync(projectAgentsDir, { recursive: true });
+
+  writeFileSync(globalConfigPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  if (options.projectConfig) {
+    writeFileSync(projectGlobalConfigPath, `${JSON.stringify(options.projectConfig, null, 2)}\n`, "utf8");
+  }
+
+  for (const [name, content] of Object.entries(agentFiles)) {
+    writeFileSync(join(agentsDir, `${name}.md`), content, "utf8");
+  }
+
+  for (const [name, content] of Object.entries(options.projectAgentFiles ?? {})) {
+    writeFileSync(join(projectAgentsDir, `${name}.md`), content, "utf8");
+  }
+
+  const manager = new PermissionManager({
+    globalConfigPath,
+    agentsDir,
+    projectGlobalConfigPath,
+    projectAgentsDir,
+    mcpServerNames: options.mcpServerNames,
+  });
+
+  return {
+    manager,
+    cleanup: (): void => {
+      rmSync(baseDir, { recursive: true, force: true });
+    },
+  };
+}
+
+runTest("Project-level config overrides base bash patterns", () => {
+  const { manager, cleanup } = createManagerWithProject(
+    {
+      defaultPolicy: {
+        tools: "allow",
+        bash: "ask",
+        mcp: "ask",
+        skills: "ask",
+        special: "ask",
+      },
+      bash: {
+        "rm -rf *": "deny",
+      },
+    },
+    {},
+    {
+      projectConfig: {
+        bash: {
+          "rm -rf build": "allow",
+        },
+      },
+    },
+  );
+
+  try {
+    const allowed = manager.checkPermission("bash", { command: "rm -rf build" });
+    assert.equal(allowed.state, "allow");
+    assert.equal(allowed.matchedPattern, "rm -rf build");
+
+    const denied = manager.checkPermission("bash", { command: "rm -rf node_modules" });
+    assert.equal(denied.state, "deny");
+    assert.equal(denied.matchedPattern, "rm -rf *");
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("System-agent config overrides project-level bash patterns", () => {
+  const { manager, cleanup } = createManagerWithProject(
+    {
+      defaultPolicy: {
+        tools: "allow",
+        bash: "ask",
+        mcp: "ask",
+        skills: "ask",
+        special: "ask",
+      },
+    },
+    {
+      reviewer: `---
+name: reviewer
+permission:
+  bash:
+    "git log *": allow
+---
+`,
+    },
+    {
+      projectConfig: {
+        bash: {
+          "git *": "deny",
+        },
+      },
+    },
+  );
+
+  try {
+    const allowed = manager.checkPermission("bash", { command: "git log --oneline" }, "reviewer");
+    assert.equal(allowed.state, "allow");
+    assert.equal(allowed.matchedPattern, "git log *");
+
+    const denied = manager.checkPermission("bash", { command: "git status" }, "reviewer");
+    assert.equal(denied.state, "deny");
+    assert.equal(denied.matchedPattern, "git *");
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("Project-agent config overrides system-agent tool rules", () => {
+  const { manager, cleanup } = createManagerWithProject(
+    {
+      defaultPolicy: {
+        tools: "ask",
+        bash: "ask",
+        mcp: "ask",
+        skills: "ask",
+        special: "ask",
+      },
+    },
+    {
+      reviewer: `---
+name: reviewer
+permission:
+  tools:
+    read: deny
+---
+`,
+    },
+    {
+      projectAgentFiles: {
+        reviewer: `---
+name: reviewer
+permission:
+  tools:
+    read: allow
+---
+`,
+      },
+    },
+  );
+
+  try {
+    const result = manager.checkPermission("read", {}, "reviewer");
+    assert.equal(result.state, "allow");
+    assert.equal(result.source, "tool");
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("Full precedence chain base < project < system-agent < project-agent for defaultPolicy", () => {
+  const { manager, cleanup } = createManagerWithProject(
+    {
+      defaultPolicy: {
+        tools: "deny",
+        bash: "ask",
+        mcp: "ask",
+        skills: "ask",
+        special: "ask",
+      },
+    },
+    {
+      reviewer: `---
+name: reviewer
+permission:
+  defaultPolicy:
+    tools: ask
+---
+`,
+    },
+    {
+      projectConfig: {
+        defaultPolicy: {
+          tools: "allow",
+        },
+      },
+      projectAgentFiles: {
+        reviewer: `---
+name: reviewer
+permission:
+  defaultPolicy:
+    tools: deny
+---
+`,
+      },
+    },
+  );
+
+  try {
+    const reviewerResult = manager.checkPermission("custom_extension_tool", {}, "reviewer");
+    assert.equal(reviewerResult.state, "deny");
+    assert.equal(reviewerResult.source, "default");
+
+    const globalResult = manager.checkPermission("custom_extension_tool", {});
+    assert.equal(globalResult.state, "allow");
+    assert.equal(globalResult.source, "default");
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("Project-agent applies even without a matching system-agent file", () => {
+  const { manager, cleanup } = createManagerWithProject(
+    {
+      defaultPolicy: {
+        tools: "allow",
+        bash: "ask",
+        mcp: "ask",
+        skills: "ask",
+        special: "ask",
+      },
+    },
+    {},
+    {
+      projectAgentFiles: {
+        reviewer: `---
+name: reviewer
+permission:
+  tools:
+    read: deny
+---
+`,
+      },
+    },
+  );
+
+  try {
+    const agentResult = manager.checkPermission("read", {}, "reviewer");
+    assert.equal(agentResult.state, "deny");
+    assert.equal(agentResult.source, "tool");
+
+    const globalResult = manager.checkPermission("read", {});
+    assert.equal(globalResult.state, "allow");
+    assert.equal(globalResult.source, "tool");
+  } finally {
+    cleanup();
+  }
 });
 
 // ---------------------------------------------------------------------------
