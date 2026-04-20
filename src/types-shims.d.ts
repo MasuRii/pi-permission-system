@@ -85,6 +85,7 @@ declare module "@mariozechner/pi-coding-agent" {
     confirm(title: string, message: string, opts?: any): Promise<boolean>;
     input(title: string, placeholder?: string, opts?: any): Promise<string | undefined>;
     notify(message: string, type?: "info" | "warning" | "error"): void;
+    setStatus(key: string, value: string | undefined): void;
     custom<T>(renderer: (...args: any[]) => any, options?: any): Promise<T>;
   }
 
