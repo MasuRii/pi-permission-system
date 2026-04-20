@@ -4,6 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { BashFilter } from "../src/bash-filter.js";
+import {
+  createActiveToolsCacheKey,
+  createBeforeAgentStartPromptStateKey,
+  shouldApplyCachedAgentStartState,
+} from "../src/before-agent-start-cache.js";
 import { DEFAULT_EXTENSION_CONFIG, loadPermissionSystemConfig, savePermissionSystemConfig } from "../src/extension-config.js";
 import { createPermissionSystemLogger } from "../src/logging.js";
 import {
@@ -47,6 +52,7 @@ function createManager(
 
   return {
     manager,
+    globalConfigPath,
     cleanup: (): void => {
       rmSync(baseDir, { recursive: true, force: true });
     },
@@ -260,6 +266,99 @@ runTest("System prompt sanitizer removes inactive built-in write guidance", () =
   assert.equal(result.prompt.includes("Use write only for new files or complete rewrites"), false);
   assert.equal(result.prompt.includes("do NOT use cat or bash to display what you did"), false);
   assert.match(result.prompt, /Be concise in your responses/);
+});
+
+runTest("Before-agent-start cache dedupes unchanged active-tool exposure and prompt state", () => {
+  const allowedTools = ["read", "mcp"];
+  const activeToolsKey = createActiveToolsCacheKey(allowedTools);
+  const promptStateKey = createBeforeAgentStartPromptStateKey({
+    agentName: "code",
+    cwd: "C:/workspace/project",
+    permissionStamp: "permissions-v1",
+    systemPrompt: "Available tools:\n- read\n- mcp",
+    allowedToolNames: allowedTools,
+  });
+
+  assert.equal(shouldApplyCachedAgentStartState(null, activeToolsKey), true);
+  assert.equal(shouldApplyCachedAgentStartState(activeToolsKey, activeToolsKey), false);
+  assert.equal(shouldApplyCachedAgentStartState(null, promptStateKey), true);
+  assert.equal(shouldApplyCachedAgentStartState(promptStateKey, promptStateKey), false);
+});
+
+runTest("Before-agent-start prompt cache invalidates on permission changes while runtime enforcement stays authoritative", () => {
+  const { manager, globalConfigPath, cleanup } = createManager({
+    defaultPolicy: {
+      tools: "allow",
+      bash: "allow",
+      mcp: "allow",
+      skills: "allow",
+      special: "allow",
+    },
+    tools: {
+      write: "deny",
+    },
+    bash: {},
+    mcp: {},
+    skills: {},
+    special: {},
+  });
+
+  try {
+    const baselineStamp = manager.getPolicyCacheStamp();
+    const baselineKey = createBeforeAgentStartPromptStateKey({
+      agentName: null,
+      cwd: "C:/workspace/project",
+      permissionStamp: baselineStamp,
+      systemPrompt: "Available tools:\n- read\n- write",
+      allowedToolNames: ["read"],
+    });
+
+    assert.equal(shouldApplyCachedAgentStartState(baselineKey, baselineKey), false);
+    assert.equal(manager.checkPermission("write", {}, undefined).state, "deny");
+
+    const updatedConfig = `${JSON.stringify({
+      defaultPolicy: {
+        tools: "allow",
+        bash: "allow",
+        mcp: "allow",
+        skills: "allow",
+        special: "allow",
+      },
+      tools: {
+        write: "allow",
+      },
+      bash: {},
+      mcp: {},
+      skills: {},
+      special: {},
+    }, null, 2)}\n`;
+
+    let updatedStamp = baselineStamp;
+    for (let attempt = 0; attempt < 10 && updatedStamp === baselineStamp; attempt += 1) {
+      const waitUntil = Date.now() + 2;
+      while (Date.now() < waitUntil) {
+        // Wait for the filesystem timestamp granularity to advance.
+      }
+
+      writeFileSync(globalConfigPath, updatedConfig, "utf8");
+      updatedStamp = manager.getPolicyCacheStamp();
+    }
+
+    assert.notEqual(updatedStamp, baselineStamp);
+
+    const invalidatedKey = createBeforeAgentStartPromptStateKey({
+      agentName: null,
+      cwd: "C:/workspace/project",
+      permissionStamp: updatedStamp,
+      systemPrompt: "Available tools:\n- read\n- write",
+      allowedToolNames: ["read", "write"],
+    });
+
+    assert.equal(shouldApplyCachedAgentStartState(baselineKey, invalidatedKey), true);
+    assert.equal(manager.checkPermission("write", {}, undefined).state, "allow");
+  } finally {
+    cleanup();
+  }
 });
 
 runTest("Permission-system logger respects debug toggle and keeps review log enabled by default", () => {
