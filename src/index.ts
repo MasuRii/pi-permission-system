@@ -1,6 +1,5 @@
 import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, normalize, resolve, sep } from "node:path";
 
 import { toRecord } from "./common.js";
@@ -224,7 +223,7 @@ function resolveSkillPromptEntries(
 
   const resolvedEntries: SkillPromptEntry[] = section.entries.map((entry) => {
     const check = permissionManager.checkPermission("skill", { name: entry.name }, agentName ?? undefined);
-    const state: PermissionState = agentName ? check.state : "deny";
+    const state: PermissionState = check.state;
     return {
       name: entry.name,
       description: entry.description,
@@ -1157,13 +1156,21 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     return toolPermission !== "deny";
   };
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     runtimeContext = ctx;
     refreshExtensionConfig(ctx);
     permissionManager = createPermissionManagerForCwd(ctx.cwd);
     activeSkillEntries = [];
     lastKnownActiveAgentName = getActiveAgentName(ctx);
     startForwardedPermissionPolling(ctx);
+
+    if (event.reason === "reload") {
+      writeDebugLog("lifecycle.reload", {
+        triggeredBy: "session_start",
+        reason: event.reason,
+        cwd: ctx.cwd,
+      });
+    }
   });
 
   pi.on("session_switch", async (_event, ctx) => {
@@ -1174,6 +1181,19 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     lastKnownActiveAgentName = getActiveAgentName(ctx);
     startForwardedPermissionPolling(ctx);
   });
+
+  pi.on("resources_discover", async (event, _ctx) => {
+    if (event.reason === "reload") {
+      permissionManager = runtimeContext ? createPermissionManagerForCwd(runtimeContext.cwd) : new PermissionManager();
+      activeSkillEntries = [];
+      writeDebugLog("lifecycle.reload", {
+        triggeredBy: "resources_discover",
+        reason: event.reason,
+        cwd: runtimeContext?.cwd ?? null,
+      });
+    }
+  });
+
 
   pi.on("session_shutdown", async () => {
     runtimeContext?.ui.setStatus(PERMISSION_SYSTEM_STATUS_KEY, undefined);
@@ -1222,26 +1242,14 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
 
     const agentName = resolveAgentName(ctx);
-
-    if (!agentName) {
-      if (ctx.hasUI) {
-        ctx.ui.notify(`Skill '${skillName}' is blocked because active agent context is unavailable.`, "warning");
-      }
-      writeReviewLog("permission_request.blocked", {
-        source: "skill_input",
-        skillName,
-        agentName: null,
-        resolution: "missing_agent_context",
-      });
-      return { action: "handled" };
-    }
-
     const check = permissionManager.checkPermission("skill", { name: skillName }, agentName ?? undefined);
 
     if (check.state === "deny") {
       if (ctx.hasUI) {
-        const resolvedAgent = agentName ?? "none";
-        ctx.ui.notify(`Skill '${skillName}' is not permitted for agent '${resolvedAgent}'.`, "warning");
+        const message = agentName
+          ? `Skill '${skillName}' is not permitted for agent '${agentName}'.`
+          : `Skill '${skillName}' is not permitted by the current skill policy.`;
+        ctx.ui.notify(message, "warning");
       }
       writeReviewLog("permission_request.blocked", {
         source: "skill_input",

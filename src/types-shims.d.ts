@@ -118,6 +118,7 @@ declare module "@mariozechner/pi-coding-agent" {
     };
   }
 
+  export function getAgentDir(): string;
   export function getSettingsListTheme(...args: any[]): any;
   export function isToolCallEventType(toolName: string, event: unknown): boolean;
 }

@@ -1,7 +1,6 @@
+import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-
-import { getAgentDir } from "@mariozechner/pi-coding-agent";
 
 import { BashFilter } from "./bash-filter.js";
 import { extractFrontmatter, getNonEmptyString, isPermissionState, parseSimpleYamlMap, toRecord } from "./common.js";
