@@ -12,12 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added project-level per-agent overrides via `<cwd>/.pi/agent/agents/<agent>.md` (thanks to @Talia-12 for PR #7)
 - Added reload-aware permission manager refresh paths so policy caches are rebuilt when Pi reload events occur
 - Added a dedicated `tests/` directory with modular test entrypoints and a shared test harness
+- Added before-agent-start caching module to dedupe unchanged active-tool exposure and prompt state across `before_agent_start` lifecycle invocations
+- Added `PermissionPromptDecision` type with `state` and `denialReason` fields for richer permission prompt resolution
+- Added `getPolicyCacheStamp()` method to `PermissionManager` for cache invalidation tracking
 
 ### Changed
 - Global path resolution now follows Pi's `getAgentDir()` helper, so global config, agents, sessions, and logs respect `PI_CODING_AGENT_DIR` (thanks to @jvortmann for PR #6)
 - Updated `@mariozechner/pi-coding-agent` and `@mariozechner/pi-tui` peer dependencies to `^0.67.68`
 - Updated TypeScript project configuration and npm scripts to run tests from `tests/` instead of `src/`
 - Updated README documentation for project-level policy files, yolo mode config, test layout, and `PI_CODING_AGENT_DIR`
+- Permission prompts and forwarding now return `PermissionPromptDecision` instead of boolean for richer resolution tracking
+- Permission denial messages now include user-provided denial reasons when available
 
 ### Removed
 - Removed the legacy packaged `asset/` directory because the README now uses externally hosted images instead of repository-bundled screenshots
@@ -29,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Tests
 - Added coverage for project-level precedence across global, project, system-agent, and project-agent layers
 - Added coverage for resolving config from `PI_CODING_AGENT_DIR`
+- Added coverage for before-agent-start cache key generation and state deduplication
+- Added coverage for cache invalidation on permission policy changes
 
 ## [0.4.1] - 2026-04-01
 
