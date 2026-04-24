@@ -16,13 +16,14 @@ import {
   isForwardedPermissionRequestForSession,
   resolvePermissionForwardingTargetSessionId,
 } from "../src/permission-forwarding.js";
+import piPermissionSystemExtension from "../src/index.js";
 import { PermissionManager } from "../src/permission-manager.js";
 import { checkRequestedToolRegistration, getToolNameFromValue } from "../src/tool-registry.js";
 import { getPermissionSystemStatus } from "../src/status.js";
 import { sanitizeAvailableToolsSection } from "../src/system-prompt-sanitizer.js";
 import type { AgentPermissions, GlobalPermissionConfig } from "../src/types.js";
 import { canResolveAskPermissionRequest, shouldAutoApprovePermissionState } from "../src/yolo-mode.js";
-import { runTest } from "./test-harness.js";
+import { runAsyncTest, runTest } from "./test-harness.js";
 
 type CreateManagerOptions = {
   mcpServerNames?: readonly string[];
@@ -57,6 +58,111 @@ function createManager(
       rmSync(baseDir, { recursive: true, force: true });
     },
   };
+}
+
+type MockHandler = (
+  event: Record<string, unknown>,
+  ctx: Record<string, unknown>,
+) => Promise<Record<string, unknown> | void> | Record<string, unknown> | void;
+
+type ExtensionHarness = {
+  baseDir: string;
+  cwd: string;
+  handlers: Record<string, MockHandler>;
+  prompts: string[];
+  cleanup: () => Promise<void>;
+};
+
+type ExtensionHarnessOptions = {
+  cwd?: string;
+  hasUI?: boolean;
+  selectResponse?: string;
+  inputResponse?: string;
+};
+
+function createToolCallHarness(
+  config: GlobalPermissionConfig,
+  toolNames: readonly string[],
+  options: ExtensionHarnessOptions = {},
+): ExtensionHarness {
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-runtime-"));
+  const cwd = options.cwd || baseDir;
+  const prompts: string[] = [];
+  const handlers: Record<string, MockHandler> = {};
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+  mkdirSync(join(baseDir, "agents"), { recursive: true });
+  mkdirSync(cwd, { recursive: true });
+  writeFileSync(join(baseDir, "pi-permissions.jsonc"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+  process.env.PI_CODING_AGENT_DIR = baseDir;
+  try {
+    piPermissionSystemExtension({
+      on: (name: string, handler: MockHandler): void => {
+        handlers[name] = handler;
+      },
+      registerCommand: (): void => {},
+      getAllTools: (): Array<{ name: string }> => toolNames.map((name) => ({ name })),
+      setActiveTools: (): void => {},
+      events: {
+        emit: (): void => {},
+      },
+    } as never);
+  } finally {
+    if (originalAgentDir === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR;
+    } else {
+      process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    }
+  }
+
+  return {
+    baseDir,
+    cwd,
+    handlers,
+    prompts,
+    cleanup: async (): Promise<void> => {
+      await Promise.resolve(handlers.session_shutdown?.({}, createMockContext(cwd, prompts, options)));
+      rmSync(baseDir, { recursive: true, force: true });
+    },
+  };
+}
+
+function createMockContext(
+  cwd: string,
+  prompts: string[],
+  options: ExtensionHarnessOptions = {},
+): Record<string, unknown> {
+  return {
+    cwd,
+    hasUI: options.hasUI === true,
+    sessionManager: {
+      getEntries: (): unknown[] => [],
+      getSessionId: (): string => "test-session",
+      getSessionDir: (): string => cwd,
+    },
+    ui: {
+      notify: (): void => {},
+      setStatus: (): void => {},
+      select: async (title: string): Promise<string | undefined> => {
+        prompts.push(title);
+        return options.selectResponse ?? "Yes";
+      },
+      input: async (): Promise<string | undefined> => options.inputResponse,
+    },
+  };
+}
+
+async function runToolCall(
+  harness: ExtensionHarness,
+  event: Record<string, unknown>,
+  options: ExtensionHarnessOptions = {},
+): Promise<Record<string, unknown>> {
+  const handler = harness.handlers.tool_call;
+  assert.equal(typeof handler, "function");
+
+  const result = await Promise.resolve(handler(event, createMockContext(harness.cwd, harness.prompts, options)));
+  return (result ?? {}) as Record<string, unknown>;
 }
 
 runTest("Permission-system extension config defaults debug off, review log on, and yolo mode off", () => {
@@ -1551,6 +1657,165 @@ runTest("external_directory permission is independent of doom_loop in the same s
     assert.equal(extResult.matchedPattern, "external_directory");
   } finally {
     cleanup();
+  }
+});
+
+await runAsyncTest("tool_call blocks path-bearing tools outside cwd when external_directory is denied", async () => {
+  const rootDir = mkdtempSync(join(tmpdir(), "pi-permission-system-boundary-"));
+  const cwd = join(rootDir, "repo");
+  const siblingPath = join(rootDir, "repo-sibling", "secret.txt");
+  mkdirSync(join(rootDir, "repo-sibling"), { recursive: true });
+
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "ask" },
+      special: { external_directory: "deny" },
+    },
+    ["read"],
+    { cwd },
+  );
+
+  try {
+    const result = await runToolCall(harness, {
+      toolName: "read",
+      toolCallId: "external-deny",
+      input: { path: siblingPath },
+    });
+
+    assert.equal(result.block, true);
+    assert.match(String(result.reason), /external directory permission denial/i);
+    assert.match(String(result.reason), /repo-sibling/);
+  } finally {
+    await harness.cleanup();
+    rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
+await runAsyncTest("tool_call allows path-bearing tools inside cwd without external_directory prompt", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "ask" },
+      special: { external_directory: "deny" },
+    },
+    ["read"],
+  );
+
+  try {
+    const result = await runToolCall(harness, {
+      toolName: "read",
+      toolCallId: "internal-allow",
+      input: { path: join(harness.cwd, "src", "index.ts") },
+    });
+
+    assert.deepEqual(result, {});
+    assert.deepEqual(harness.prompts, []);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("tool_call blocks external_directory ask when no confirmation channel is available", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "ask" },
+      special: { external_directory: "ask" },
+    },
+    ["write"],
+  );
+
+  try {
+    const result = await runToolCall(harness, {
+      toolName: "write",
+      toolCallId: "external-ask-no-ui",
+      input: { path: join(harness.cwd, "..", "outside.txt"), content: "blocked" },
+    });
+
+    assert.equal(result.block, true);
+    assert.match(String(result.reason), /requires approval, but no interactive UI is available/i);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("tool_call prompts for external_directory and then falls through to normal tool policy", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "ask" },
+      special: { external_directory: "ask" },
+    },
+    ["grep"],
+  );
+
+  try {
+    const externalPath = join(harness.cwd, "..", "external-search-root");
+    const result = await runToolCall(
+      harness,
+      {
+        toolName: "grep",
+        toolCallId: "external-ask-approved",
+        input: { pattern: "needle", path: externalPath },
+      },
+      { hasUI: true, selectResponse: "Yes" },
+    );
+
+    assert.deepEqual(result, {});
+    assert.equal(harness.prompts.length, 1);
+    assert.match(harness.prompts[0], /external directory access/i);
+    assert.match(harness.prompts[0], /grep/);
+    assert.match(harness.prompts[0], /external-search-root/);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("tool_call skips external_directory checks for optional path tools without a path", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "ask" },
+      special: { external_directory: "deny" },
+    },
+    ["find"],
+  );
+
+  try {
+    const result = await runToolCall(harness, {
+      toolName: "find",
+      toolCallId: "find-default-cwd",
+      input: { pattern: "*.ts" },
+    });
+
+    assert.deepEqual(result, {});
+    assert.deepEqual(harness.prompts, []);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("generic ask prompts include serialized tool input for informed approval", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "ask", special: "ask" },
+    },
+    ["weather_lookup"],
+  );
+
+  try {
+    const result = await runToolCall(
+      harness,
+      {
+        toolName: "weather_lookup",
+        toolCallId: "generic-tool-input",
+        input: { city: "Chicago", units: "metric" },
+      },
+      { hasUI: true, selectResponse: "No" },
+    );
+
+    assert.equal(result.block, true);
+    assert.equal(harness.prompts.length, 1);
+    assert.match(harness.prompts[0], /weather_lookup/);
+    assert.match(harness.prompts[0], /\{"city":"Chicago","units":"metric"\}/);
+  } finally {
+    await harness.cleanup();
   }
 });
 
