@@ -1414,4 +1414,144 @@ runTest("PermissionManager reads config from PI_CODING_AGENT_DIR when set", () =
   }
 });
 
+// ---------------------------------------------------------------------------
+// external_directory special permission
+// ---------------------------------------------------------------------------
+
+runTest("external_directory permission falls back to special default policy when not explicitly configured", () => {
+  const { manager, cleanup } = createManager({
+    defaultPolicy: {
+      tools: "allow",
+      bash: "allow",
+      mcp: "allow",
+      skills: "allow",
+      special: "ask",
+    },
+  });
+
+  try {
+    const result = manager.checkPermission("external_directory", {});
+    assert.equal(result.state, "ask");
+    assert.equal(result.source, "special");
+    assert.equal(result.matchedPattern, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("external_directory permission respects explicit deny in special config", () => {
+  const { manager, cleanup } = createManager({
+    defaultPolicy: {
+      tools: "allow",
+      bash: "allow",
+      mcp: "allow",
+      skills: "allow",
+      special: "ask",
+    },
+    special: {
+      external_directory: "deny",
+    },
+  });
+
+  try {
+    const result = manager.checkPermission("external_directory", {});
+    assert.equal(result.state, "deny");
+    assert.equal(result.source, "special");
+    assert.equal(result.matchedPattern, "external_directory");
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("external_directory permission can be explicitly allowed", () => {
+  const { manager, cleanup } = createManager({
+    defaultPolicy: {
+      tools: "allow",
+      bash: "allow",
+      mcp: "allow",
+      skills: "allow",
+      special: "deny",
+    },
+    special: {
+      external_directory: "allow",
+    },
+  });
+
+  try {
+    const result = manager.checkPermission("external_directory", {});
+    assert.equal(result.state, "allow");
+    assert.equal(result.source, "special");
+    assert.equal(result.matchedPattern, "external_directory");
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("external_directory permission respects per-agent override", () => {
+  const { manager, cleanup } = createManager(
+    {
+      defaultPolicy: {
+        tools: "allow",
+        bash: "allow",
+        mcp: "allow",
+        skills: "allow",
+        special: "ask",
+      },
+      special: {
+        external_directory: "deny",
+      },
+    },
+    {
+      trusted: `---
+name: trusted
+permission:
+  special:
+    external_directory: allow
+---
+`,
+    },
+  );
+
+  try {
+    // Global policy denies external_directory
+    const globalResult = manager.checkPermission("external_directory", {});
+    assert.equal(globalResult.state, "deny");
+
+    // Trusted agent overrides to allow
+    const agentResult = manager.checkPermission("external_directory", {}, "trusted");
+    assert.equal(agentResult.state, "allow");
+    assert.equal(agentResult.source, "special");
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("external_directory permission is independent of doom_loop in the same special config", () => {
+  const { manager, cleanup } = createManager({
+    defaultPolicy: {
+      tools: "allow",
+      bash: "allow",
+      mcp: "allow",
+      skills: "allow",
+      special: "ask",
+    },
+    special: {
+      doom_loop: "deny",
+      external_directory: "allow",
+    },
+  });
+
+  try {
+    const doomResult = manager.checkPermission("doom_loop", {});
+    assert.equal(doomResult.state, "deny");
+    assert.equal(doomResult.matchedPattern, "doom_loop");
+
+    const extResult = manager.checkPermission("external_directory", {});
+    assert.equal(extResult.state, "allow");
+    assert.equal(extResult.matchedPattern, "external_directory");
+  } finally {
+    cleanup();
+  }
+});
+
 console.log("All permission system tests passed.");

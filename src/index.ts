@@ -1431,6 +1431,73 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       }
     }
 
+    if (ctx.cwd && PATH_BEARING_TOOLS.has(toolName)) {
+      const toolInput = getEventInput(event);
+      const inputRecord = toRecord(toolInput);
+      const rawPath = typeof inputRecord.path === "string" ? inputRecord.path.trim() : null;
+
+      if (rawPath) {
+        const normalizedCwd = normalizeFilesystemPath(ctx.cwd);
+        const normalizedFilePath = normalizePathForComparison(rawPath, ctx.cwd);
+
+        if (normalizedFilePath && !isPathWithinDirectory(normalizedFilePath, normalizedCwd)) {
+          const extCheck = permissionManager.checkPermission("external_directory", {}, agentName ?? undefined);
+
+          if (extCheck.state === "deny") {
+            writeReviewLog("permission_request.blocked", {
+              source: "tool_call",
+              toolCallId: event.toolCallId,
+              toolName,
+              agentName,
+              path: rawPath,
+              resolution: "policy_denied",
+            });
+            return {
+              block: true,
+              reason: formatExternalDirectoryDenyReason(rawPath, ctx.cwd, agentName ?? undefined),
+            };
+          }
+
+          if (extCheck.state === "ask") {
+            const message = formatExternalDirectoryAskPrompt(rawPath, ctx.cwd, agentName ?? undefined);
+            if (!canRequestPermissionConfirmation(ctx)) {
+              writeReviewLog("permission_request.blocked", {
+                source: "tool_call",
+                toolCallId: event.toolCallId,
+                toolName,
+                agentName,
+                path: rawPath,
+                message,
+                resolution: "confirmation_unavailable",
+              });
+              return {
+                block: true,
+                reason: `Accessing '${rawPath}' outside the working directory requires approval, but no interactive UI is available.`,
+              };
+            }
+
+            const extDecision = await promptPermission(ctx, {
+              requestId: event.toolCallId,
+              source: "tool_call",
+              agentName,
+              message,
+              toolCallId: event.toolCallId,
+              toolName,
+              path: rawPath,
+            });
+
+            if (!extDecision.approved) {
+              return {
+                block: true,
+                reason: formatExternalDirectoryUserDeniedReason(rawPath, extDecision.denialReason),
+              };
+            }
+          }
+          // state === "allow" → fall through to normal permission check
+        }
+      }
+    }
+
     const input = getEventInput(event);
     const check = permissionManager.checkPermission(toolName, input, agentName ?? undefined);
     const permissionLogContext = getPermissionLogContext(check);
