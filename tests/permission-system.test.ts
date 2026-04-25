@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { BashFilter } from "../src/bash-filter.js";
 import {
@@ -9,20 +9,26 @@ import {
   createBeforeAgentStartPromptStateKey,
   shouldApplyCachedAgentStartState,
 } from "../src/before-agent-start-cache.js";
-import { DEFAULT_EXTENSION_CONFIG, loadPermissionSystemConfig, savePermissionSystemConfig } from "../src/extension-config.js";
+import { CONFIG_PATH, DEFAULT_EXTENSION_CONFIG, loadPermissionSystemConfig, savePermissionSystemConfig } from "../src/extension-config.js";
 import { createPermissionSystemLogger } from "../src/logging.js";
 import {
   createPermissionForwardingLocation,
   isForwardedPermissionRequestForSession,
   resolvePermissionForwardingTargetSessionId,
 } from "../src/permission-forwarding.js";
+import piPermissionSystemExtension from "../src/index.js";
 import { PermissionManager } from "../src/permission-manager.js";
+import {
+  parseAllSkillPromptSections,
+  resolveSkillPromptEntries,
+  findSkillPathMatch,
+} from "../src/skill-prompt-sanitizer.js";
 import { checkRequestedToolRegistration, getToolNameFromValue } from "../src/tool-registry.js";
 import { getPermissionSystemStatus } from "../src/status.js";
 import { sanitizeAvailableToolsSection } from "../src/system-prompt-sanitizer.js";
 import type { AgentPermissions, GlobalPermissionConfig } from "../src/types.js";
 import { canResolveAskPermissionRequest, shouldAutoApprovePermissionState } from "../src/yolo-mode.js";
-import { runTest } from "./test-harness.js";
+import { runAsyncTest, runTest } from "./test-harness.js";
 
 type CreateManagerOptions = {
   mcpServerNames?: readonly string[];
@@ -57,6 +63,120 @@ function createManager(
       rmSync(baseDir, { recursive: true, force: true });
     },
   };
+}
+
+type MockHandler = (
+  event: Record<string, unknown>,
+  ctx: Record<string, unknown>,
+) => Promise<Record<string, unknown> | void> | Record<string, unknown> | void;
+
+type ExtensionHarness = {
+  baseDir: string;
+  cwd: string;
+  handlers: Record<string, MockHandler>;
+  prompts: string[];
+  cleanup: () => Promise<void>;
+};
+
+type ExtensionHarnessOptions = {
+  cwd?: string;
+  hasUI?: boolean;
+  selectResponse?: string;
+  inputResponse?: string;
+};
+
+function createToolCallHarness(
+  config: GlobalPermissionConfig,
+  toolNames: readonly string[],
+  options: ExtensionHarnessOptions = {},
+): ExtensionHarness {
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-runtime-"));
+  const cwd = options.cwd || baseDir;
+  const prompts: string[] = [];
+  const handlers: Record<string, MockHandler> = {};
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const originalExtensionConfig = existsSync(CONFIG_PATH) ? readFileSync(CONFIG_PATH, "utf8") : null;
+
+  mkdirSync(join(baseDir, "agents"), { recursive: true });
+  mkdirSync(cwd, { recursive: true });
+  writeFileSync(join(baseDir, "pi-permissions.jsonc"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  writeFileSync(CONFIG_PATH, `${JSON.stringify(DEFAULT_EXTENSION_CONFIG, null, 2)}\n`, "utf8");
+
+  process.env.PI_CODING_AGENT_DIR = baseDir;
+  try {
+    piPermissionSystemExtension({
+      on: (name: string, handler: MockHandler): void => {
+        handlers[name] = handler;
+      },
+      registerCommand: (): void => {},
+      getAllTools: (): Array<{ name: string }> => toolNames.map((name) => ({ name })),
+      setActiveTools: (): void => {},
+      events: {
+        emit: (): void => {},
+      },
+    } as never);
+  } finally {
+    if (originalAgentDir === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR;
+    } else {
+      process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    }
+  }
+
+  return {
+    baseDir,
+    cwd,
+    handlers,
+    prompts,
+    cleanup: async (): Promise<void> => {
+      await Promise.resolve(handlers.session_shutdown?.({}, createMockContext(cwd, prompts, options)));
+      if (originalExtensionConfig === null) {
+        if (existsSync(CONFIG_PATH)) {
+          unlinkSync(CONFIG_PATH);
+        }
+      } else {
+        writeFileSync(CONFIG_PATH, originalExtensionConfig, "utf8");
+      }
+      rmSync(baseDir, { recursive: true, force: true });
+    },
+  };
+}
+
+function createMockContext(
+  cwd: string,
+  prompts: string[],
+  options: ExtensionHarnessOptions = {},
+): Record<string, unknown> {
+  return {
+    cwd,
+    hasUI: options.hasUI === true,
+    sessionManager: {
+      getEntries: (): unknown[] => [],
+      getSessionId: (): string => "test-session",
+      getSessionDir: (): string => cwd,
+    },
+    ui: {
+      notify: (): void => {},
+      setStatus: (): void => {},
+      select: async (title: string): Promise<string | undefined> => {
+        prompts.push(title);
+        return options.selectResponse ?? "Yes";
+      },
+      input: async (): Promise<string | undefined> => options.inputResponse,
+    },
+  };
+}
+
+async function runToolCall(
+  harness: ExtensionHarness,
+  event: Record<string, unknown>,
+  options: ExtensionHarnessOptions = {},
+): Promise<Record<string, unknown>> {
+  const handler = harness.handlers.tool_call;
+  assert.equal(typeof handler, "function");
+
+  const result = await Promise.resolve(handler(event, createMockContext(harness.cwd, harness.prompts, options)));
+  return (result ?? {}) as Record<string, unknown>;
 }
 
 runTest("Permission-system extension config defaults debug off, review log on, and yolo mode off", () => {
@@ -1411,6 +1531,424 @@ runTest("PermissionManager reads config from PI_CODING_AGENT_DIR when set", () =
       delete process.env.PI_CODING_AGENT_DIR;
     }
     rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Skill prompt sanitization - multi-block regression tests
+// ---------------------------------------------------------------------------
+
+runTest("parseAllSkillPromptSections finds every available_skills block", () => {
+  const prompt = [
+    "Some preamble",
+    "<available_skills>",
+    "  <skill>",
+    "    <name>skill-one</name>",
+    "    <description>First skill</description>",
+    "    <location>/path/to/one</location>",
+    "  </skill>",
+    "</available_skills>",
+    "Some content between",
+    "<available_skills>",
+    "  <skill>",
+    "    <name>skill-two</name>",
+    "    <description>Second skill</description>",
+    "    <location>/path/to/two</location>",
+    "  </skill>",
+    "</available_skills>",
+    "Footer",
+  ].join("\n");
+
+  const sections = parseAllSkillPromptSections(prompt);
+
+  assert.equal(sections.length, 2);
+  assert.equal(sections[0].entries[0]?.name, "skill-one");
+  assert.equal(sections[1].entries[0]?.name, "skill-two");
+});
+
+runTest("REGRESSION: resolveSkillPromptEntries sanitizes every available_skills block", () => {
+  const { manager, cleanup } = createManager({
+    defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "ask", special: "ask" },
+    skills: {
+      "denied-skill": "deny",
+    },
+  });
+
+  try {
+    const prompt = [
+      "System prompt start",
+      "<available_skills>",
+      "  <skill>",
+      "    <name>visible-skill</name>",
+      "    <description>Allowed skill</description>",
+      "    <location>/skills/visible/index.ts</location>",
+      "  </skill>",
+      "  <skill>",
+      "    <name>denied-skill</name>",
+      "    <description>Denied in first block</description>",
+      "    <location>/skills/blocked/one.ts</location>",
+      "  </skill>",
+      "</available_skills>",
+      "Agent identity section",
+      "<available_skills>",
+      "  <skill>",
+      "    <name>denied-skill</name>",
+      "    <description>Denied in second block</description>",
+      "    <location>/skills/blocked/two.ts</location>",
+      "  </skill>",
+      "</available_skills>",
+      "System prompt end",
+    ].join("\n");
+
+    const result = resolveSkillPromptEntries(prompt, manager, null, "/cwd");
+
+    assert.equal(result.prompt.includes("denied-skill"), false, "Denied skill should be removed from every block");
+    assert.equal(result.prompt.includes("visible-skill"), true, "Visible skill should remain in the prompt");
+    assert.equal((result.prompt.match(/<available_skills>/g) || []).length, 1, "Fully denied blocks should be removed");
+    assert.deepEqual(result.entries.map((entry) => entry.name), ["visible-skill"], "Tracked skill entries should exclude denied skills");
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("REGRESSION: resolveSkillPromptEntries keeps only visible skills available for path matching", () => {
+  const { manager, cleanup } = createManager({
+    defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "ask", special: "ask" },
+    skills: {
+      "blocked-skill": "deny",
+    },
+  });
+
+  try {
+    const prompt = [
+      "System prompt start",
+      "<available_skills>",
+      "  <skill>",
+      "    <name>blocked-skill</name>",
+      "    <description>Blocked skill</description>",
+      "    <location>@./skills/blocked/entry.ts</location>",
+      "  </skill>",
+      "</available_skills>",
+      "Middle section",
+      "<available_skills>",
+      "  <skill>",
+      "    <name>visible-skill</name>",
+      "    <description>Visible skill</description>",
+      "    <location>@./skills/visible/entry.ts</location>",
+      "  </skill>",
+      "</available_skills>",
+      "System prompt end",
+    ].join("\n");
+
+    const result = resolveSkillPromptEntries(prompt, manager, null, "/cwd");
+    const visiblePath = resolve("/cwd", "./skills/visible/file.ts");
+    const blockedPath = resolve("/cwd", "./skills/blocked/file.ts");
+    const matchedVisibleSkill = findSkillPathMatch(process.platform === "win32" ? visiblePath.toLowerCase() : visiblePath, result.entries);
+    const matchedBlockedSkill = findSkillPathMatch(process.platform === "win32" ? blockedPath.toLowerCase() : blockedPath, result.entries);
+
+    assert.equal(matchedVisibleSkill?.name, "visible-skill");
+    assert.equal(matchedBlockedSkill, null, "Denied skills should not remain in tracked entries");
+  } finally {
+    cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// external_directory special permission
+// ---------------------------------------------------------------------------
+
+runTest("external_directory permission falls back to special default policy when not explicitly configured", () => {
+  const { manager, cleanup } = createManager({
+    defaultPolicy: {
+      tools: "allow",
+      bash: "allow",
+      mcp: "allow",
+      skills: "allow",
+      special: "ask",
+    },
+  });
+
+  try {
+    const result = manager.checkPermission("external_directory", {});
+    assert.equal(result.state, "ask");
+    assert.equal(result.source, "special");
+    assert.equal(result.matchedPattern, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("external_directory permission respects explicit deny in special config", () => {
+  const { manager, cleanup } = createManager({
+    defaultPolicy: {
+      tools: "allow",
+      bash: "allow",
+      mcp: "allow",
+      skills: "allow",
+      special: "ask",
+    },
+    special: {
+      external_directory: "deny",
+    },
+  });
+
+  try {
+    const result = manager.checkPermission("external_directory", {});
+    assert.equal(result.state, "deny");
+    assert.equal(result.source, "special");
+    assert.equal(result.matchedPattern, "external_directory");
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("external_directory permission can be explicitly allowed", () => {
+  const { manager, cleanup } = createManager({
+    defaultPolicy: {
+      tools: "allow",
+      bash: "allow",
+      mcp: "allow",
+      skills: "allow",
+      special: "deny",
+    },
+    special: {
+      external_directory: "allow",
+    },
+  });
+
+  try {
+    const result = manager.checkPermission("external_directory", {});
+    assert.equal(result.state, "allow");
+    assert.equal(result.source, "special");
+    assert.equal(result.matchedPattern, "external_directory");
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("external_directory permission respects per-agent override", () => {
+  const { manager, cleanup } = createManager(
+    {
+      defaultPolicy: {
+        tools: "allow",
+        bash: "allow",
+        mcp: "allow",
+        skills: "allow",
+        special: "ask",
+      },
+      special: {
+        external_directory: "deny",
+      },
+    },
+    {
+      trusted: `---
+name: trusted
+permission:
+  special:
+    external_directory: allow
+---
+`,
+    },
+  );
+
+  try {
+    // Global policy denies external_directory
+    const globalResult = manager.checkPermission("external_directory", {});
+    assert.equal(globalResult.state, "deny");
+
+    // Trusted agent overrides to allow
+    const agentResult = manager.checkPermission("external_directory", {}, "trusted");
+    assert.equal(agentResult.state, "allow");
+    assert.equal(agentResult.source, "special");
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("external_directory permission is independent of doom_loop in the same special config", () => {
+  const { manager, cleanup } = createManager({
+    defaultPolicy: {
+      tools: "allow",
+      bash: "allow",
+      mcp: "allow",
+      skills: "allow",
+      special: "ask",
+    },
+    special: {
+      doom_loop: "deny",
+      external_directory: "allow",
+    },
+  });
+
+  try {
+    const doomResult = manager.checkPermission("doom_loop", {});
+    assert.equal(doomResult.state, "deny");
+    assert.equal(doomResult.matchedPattern, "doom_loop");
+
+    const extResult = manager.checkPermission("external_directory", {});
+    assert.equal(extResult.state, "allow");
+    assert.equal(extResult.matchedPattern, "external_directory");
+  } finally {
+    cleanup();
+  }
+});
+
+await runAsyncTest("tool_call blocks path-bearing tools outside cwd when external_directory is denied", async () => {
+  const rootDir = mkdtempSync(join(tmpdir(), "pi-permission-system-boundary-"));
+  const cwd = join(rootDir, "repo");
+  const siblingPath = join(rootDir, "repo-sibling", "secret.txt");
+  mkdirSync(join(rootDir, "repo-sibling"), { recursive: true });
+
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "ask" },
+      special: { external_directory: "deny" },
+    },
+    ["read"],
+    { cwd },
+  );
+
+  try {
+    const result = await runToolCall(harness, {
+      toolName: "read",
+      toolCallId: "external-deny",
+      input: { path: siblingPath },
+    });
+
+    assert.equal(result.block, true);
+    assert.match(String(result.reason), /external directory permission denial/i);
+    assert.match(String(result.reason), /repo-sibling/);
+  } finally {
+    await harness.cleanup();
+    rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
+await runAsyncTest("tool_call allows path-bearing tools inside cwd without external_directory prompt", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "ask" },
+      special: { external_directory: "deny" },
+    },
+    ["read"],
+  );
+
+  try {
+    const result = await runToolCall(harness, {
+      toolName: "read",
+      toolCallId: "internal-allow",
+      input: { path: join(harness.cwd, "src", "index.ts") },
+    });
+
+    assert.deepEqual(result, {});
+    assert.deepEqual(harness.prompts, []);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("tool_call blocks external_directory ask when no confirmation channel is available", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "ask" },
+      special: { external_directory: "ask" },
+    },
+    ["write"],
+  );
+
+  try {
+    const result = await runToolCall(harness, {
+      toolName: "write",
+      toolCallId: "external-ask-no-ui",
+      input: { path: join(harness.cwd, "..", "outside.txt"), content: "blocked" },
+    });
+
+    assert.equal(result.block, true);
+    assert.match(String(result.reason), /requires approval, but no interactive UI is available/i);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("tool_call prompts for external_directory and then falls through to normal tool policy", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "ask" },
+      special: { external_directory: "ask" },
+    },
+    ["grep"],
+  );
+
+  try {
+    const externalPath = join(harness.cwd, "..", "external-search-root");
+    const result = await runToolCall(
+      harness,
+      {
+        toolName: "grep",
+        toolCallId: "external-ask-approved",
+        input: { pattern: "needle", path: externalPath },
+      },
+      { hasUI: true, selectResponse: "Yes" },
+    );
+
+    assert.deepEqual(result, {});
+    assert.equal(harness.prompts.length, 1);
+    assert.match(harness.prompts[0], /external directory access/i);
+    assert.match(harness.prompts[0], /grep/);
+    assert.match(harness.prompts[0], /external-search-root/);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("tool_call skips external_directory checks for optional path tools without a path", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "ask" },
+      special: { external_directory: "deny" },
+    },
+    ["find"],
+  );
+
+  try {
+    const result = await runToolCall(harness, {
+      toolName: "find",
+      toolCallId: "find-default-cwd",
+      input: { pattern: "*.ts" },
+    });
+
+    assert.deepEqual(result, {});
+    assert.deepEqual(harness.prompts, []);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("generic ask prompts include serialized tool input for informed approval", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "ask", special: "ask" },
+    },
+    ["weather_lookup"],
+  );
+
+  try {
+    const result = await runToolCall(
+      harness,
+      {
+        toolName: "weather_lookup",
+        toolCallId: "generic-tool-input",
+        input: { city: "Chicago", units: "metric" },
+      },
+      { hasUI: true, selectResponse: "No" },
+    );
+
+    assert.equal(result.block, true);
+    assert.equal(harness.prompts.length, 1);
+    assert.match(harness.prompts[0], /weather_lookup/);
+    assert.match(harness.prompts[0], /\{"city":"Chicago","units":"metric"\}/);
+  } finally {
+    await harness.cleanup();
   }
 });
 
