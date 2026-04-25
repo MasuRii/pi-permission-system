@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.3] - 2026-04-25
+## [0.4.4] - 2026-04-25
 
 ### Added
 - Added runtime enforcement for the `external_directory` special permission on path-bearing tools (`read`, `write`, `edit`, `find`, `grep`, `ls`) before normal tool permission checks (thanks to @gotgenes for PR #9)

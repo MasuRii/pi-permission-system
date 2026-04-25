@@ -1,6 +1,6 @@
 # 🔐 pi-permission-system
 
-[![Version](https://img.shields.io/badge/version-0.4.3-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-0.4.4-blue.svg)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Permission enforcement extension for the Pi coding agent that provides centralized, deterministic permission gates for tool, bash, MCP, skill, and special operations.
