@@ -411,8 +411,21 @@ function formatJsonInputForPrompt(input: unknown): string {
     return "";
   }
 
-  if (typeof input === "object" && !Array.isArray(input) && Object.keys(input as Record<string, unknown>).length === 0) {
-    return "";
+  if (typeof input === "object" && !Array.isArray(input)) {
+    const entries = Object.entries(input as Record<string, unknown>);
+    if (entries.length === 0) {
+      return "";
+    }
+    const lines = entries.flatMap(([k, v]) => {
+      let val: string;
+      try {
+        val = JSON.stringify(v);
+      } catch {
+        return [];
+      }
+      return [`  ${k}: ${truncateInlineText(val, TOOL_INPUT_PREVIEW_MAX_LENGTH)}`];
+    });
+    return lines.length > 0 ? `params:\n${lines.join("\n")}` : "";
   }
 
   let serialized: string;
@@ -422,15 +435,11 @@ function formatJsonInputForPrompt(input: unknown): string {
     return "";
   }
 
-  if (!serialized || serialized === "{}" || serialized === "null") {
+  if (!serialized || serialized === "null") {
     return "";
   }
 
-  const inline = serialized
-    .replace(/\\r\\n|\\n|\\r|\\t/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return inline ? `with input ${truncateInlineText(inline, TOOL_INPUT_PREVIEW_MAX_LENGTH)}` : "";
+  return `input ${truncateInlineText(serialized, TOOL_INPUT_PREVIEW_MAX_LENGTH)}`;
 }
 
 function formatToolInputForPrompt(toolName: string, input: unknown): string {
@@ -452,6 +461,7 @@ function formatToolInputForPrompt(toolName: string, input: unknown): string {
   }
 }
 
+
 function formatAskPrompt(result: PermissionCheckResult, agentName?: string, input?: unknown): string {
   const subject = agentName ? `Agent '${agentName}'` : "Current agent";
 
@@ -467,8 +477,8 @@ function formatAskPrompt(result: PermissionCheckResult, agentName?: string, inpu
 
   const patternInfo = result.matchedPattern ? ` (matched '${result.matchedPattern}')` : "";
   const inputPreview = formatToolInputForPrompt(result.toolName, input);
-  const inputSuffix = inputPreview ? ` ${inputPreview}` : "";
-  return `${subject} requested tool '${result.toolName}'${patternInfo}${inputSuffix}. Allow this call?`;
+  const inputSuffix = inputPreview ? `\n  ${inputPreview}` : "";
+  return `${subject} requested tool '${result.toolName}'${patternInfo}.${inputSuffix}\nAllow this call?`;
 }
 
 function formatSkillAskPrompt(skillName: string, agentName?: string): string {
@@ -519,10 +529,11 @@ function formatExternalDirectoryUserDeniedReason(
   return `User denied external directory access for tool '${toolName}' path '${pathValue}'.${reasonSuffix} ${formatExternalDirectoryHardStopHint()}`;
 }
 
-function getPermissionLogContext(result: PermissionCheckResult): { command?: string; target?: string } {
+function getPermissionLogContext(result: PermissionCheckResult, input?: unknown): { command?: string; target?: string; toolInput?: unknown } {
   return {
     command: result.command,
     target: result.target,
+    toolInput: input,
   };
 }
 
@@ -1563,7 +1574,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
 
     const check = permissionManager.checkPermission(toolName, input, agentName ?? undefined);
-    const permissionLogContext = getPermissionLogContext(check);
+    const permissionLogContext = getPermissionLogContext(check, input);
 
     if (check.state === "deny") {
       writeReviewLog("permission_request.blocked", {
