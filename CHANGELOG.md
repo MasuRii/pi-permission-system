@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-04-27
+
+### Fixed
+- Added a model option compatibility guard for OpenAI Responses/Codex streams so unsupported `temperature` values are removed from stream options and outgoing payloads before provider calls.
+
 ## [0.4.4] - 2026-04-25
 
 ### Added

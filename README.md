@@ -1,7 +1,6 @@
 # 🔐 pi-permission-system
 
-[![Version](https://img.shields.io/badge/version-0.4.4-blue.svg)](package.json)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![npm version](https://img.shields.io/npm/v/pi-permission-system?style=flat-square)](https://www.npmjs.com/package/pi-permission-system) [![License](https://img.shields.io/github/license/MasuRii/pi-permission-system?style=flat-square)](LICENSE)
 
 Permission enforcement extension for the Pi coding agent that provides centralized, deterministic permission gates for tool, bash, MCP, skill, and special operations.
 
@@ -24,6 +23,14 @@ Permission enforcement extension for the Pi coding agent that provides centraliz
 - **External Directory Guard** — Enforces `special.external_directory` for path-bearing file tools that target paths outside the active working directory
 
 ## Installation
+
+### npm package
+
+```bash
+pi install npm:pi-permission-system
+```
+
+### Local extension folder
 
 Place this folder in one of the following locations:
 
