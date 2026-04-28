@@ -22,7 +22,7 @@ import {
   savePermissionSystemConfig,
   type PermissionSystemExtensionConfig,
 } from "./extension-config.js";
-import { createPermissionSystemLogger } from "./logging.js";
+import { createPermissionSystemLogger, safeJsonStringify } from "./logging.js";
 import { registerPermissionSystemCommand } from "./config-modal.js";
 import {
   createPermissionForwardingLocation,
@@ -69,6 +69,7 @@ type PermissionRequestEvent = {
   path?: string;
   command?: string;
   target?: string;
+  toolInputPreview?: string;
   agentName?: string | null;
 };
 
@@ -313,6 +314,7 @@ function formatUserDeniedReason(result: PermissionCheckResult, denialReason?: st
 }
 
 const TOOL_INPUT_PREVIEW_MAX_LENGTH = 200;
+const TOOL_INPUT_LOG_PREVIEW_MAX_LENGTH = 1000;
 const TOOL_TEXT_SUMMARY_MAX_LENGTH = 80;
 
 function truncateInlineText(value: string, maxLength: number): string {
@@ -406,30 +408,17 @@ function formatSearchInputForPrompt(toolName: string, input: Record<string, unkn
   return parts.length > 0 ? `for ${parts.join(", ")}` : "";
 }
 
-function formatJsonInputForPrompt(input: unknown): string {
-  if (input === undefined || input === null) {
-    return "";
-  }
-
-  if (typeof input === "object" && !Array.isArray(input) && Object.keys(input as Record<string, unknown>).length === 0) {
-    return "";
-  }
-
-  let serialized: string;
-  try {
-    serialized = JSON.stringify(input);
-  } catch {
-    return "";
-  }
-
+function serializeToolInputPreview(input: unknown): string {
+  const serialized = safeJsonStringify(input);
   if (!serialized || serialized === "{}" || serialized === "null") {
     return "";
   }
 
-  const inline = serialized
-    .replace(/\\r\\n|\\n|\\r|\\t/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return serialized.replace(/\s+/g, " ").trim();
+}
+
+function formatJsonInputForPrompt(input: unknown): string {
+  const inline = serializeToolInputPreview(input);
   return inline ? `with input ${truncateInlineText(inline, TOOL_INPUT_PREVIEW_MAX_LENGTH)}` : "";
 }
 
@@ -519,10 +508,29 @@ function formatExternalDirectoryUserDeniedReason(
   return `User denied external directory access for tool '${toolName}' path '${pathValue}'.${reasonSuffix} ${formatExternalDirectoryHardStopHint()}`;
 }
 
-function getPermissionLogContext(result: PermissionCheckResult): { command?: string; target?: string } {
+function formatGenericToolInputForLog(input: unknown): string | undefined {
+  const inline = serializeToolInputPreview(input);
+  return inline ? `input ${truncateInlineText(inline, TOOL_INPUT_LOG_PREVIEW_MAX_LENGTH)}` : undefined;
+}
+
+function getToolInputPreviewForLog(result: PermissionCheckResult, input: unknown): string | undefined {
+  if (result.toolName === "bash" || result.toolName === "mcp" || result.source === "mcp") {
+    return undefined;
+  }
+
+  if (PATH_BEARING_TOOLS.has(result.toolName)) {
+    const inputPreview = formatToolInputForPrompt(result.toolName, input);
+    return inputPreview ? truncateInlineText(inputPreview, TOOL_INPUT_LOG_PREVIEW_MAX_LENGTH) : undefined;
+  }
+
+  return formatGenericToolInputForLog(input);
+}
+
+function getPermissionLogContext(result: PermissionCheckResult, input: unknown): { command?: string; target?: string; toolInputPreview?: string } {
   return {
     command: result.command,
     target: result.target,
+    toolInputPreview: getToolInputPreviewForLog(result, input),
   };
 }
 
@@ -1114,6 +1122,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       path?: string;
       command?: string;
       target?: string;
+      toolInputPreview?: string;
       resolution?: string;
       denialReason?: string;
     },
@@ -1129,6 +1138,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       path: details.path ?? null,
       command: details.command ?? null,
       target: details.target ?? null,
+      toolInputPreview: details.toolInputPreview ?? null,
       resolution: details.resolution ?? null,
       denialReason: details.denialReason ?? null,
     });
@@ -1147,6 +1157,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       path?: string;
       command?: string;
       target?: string;
+      toolInputPreview?: string;
     },
   ): Promise<PermissionPromptDecision> => {
     if (shouldAutoApprovePermissionState("ask", extensionConfig)) {
@@ -1162,6 +1173,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         path: details.path,
         command: details.command,
         target: details.target,
+        toolInputPreview: details.toolInputPreview,
         agentName: details.agentName,
       });
       return { approved: true, state: "approved" };
@@ -1179,6 +1191,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       path: details.path,
       command: details.command,
       target: details.target,
+      toolInputPreview: details.toolInputPreview,
       agentName: details.agentName,
     });
 
@@ -1199,6 +1212,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       path: details.path,
       command: details.command,
       target: details.target,
+      toolInputPreview: details.toolInputPreview,
       agentName: details.agentName,
     });
 
@@ -1563,7 +1577,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
 
     const check = permissionManager.checkPermission(toolName, input, agentName ?? undefined);
-    const permissionLogContext = getPermissionLogContext(check);
+    const permissionLogContext = getPermissionLogContext(check, input);
 
     if (check.state === "deny") {
       writeReviewLog("permission_request.blocked", {

@@ -93,6 +93,7 @@ The extension integrates via Pi's lifecycle hooks:
 - Extension-provided tools like `task`, `mcp`, and third-party tools are handled by exact registered name instead of private built-in hardcodes
 - When a subagent hits an `ask` permission without direct UI access, the request can be forwarded to the main interactive session for confirmation
 - Generic extension-tool approval prompts include a bounded input preview; built-in file tools use concise human-readable summaries instead of raw multiline JSON
+- Permission review logs include bounded `toolInputPreview` values for non-bash/non-MCP tool calls so approvals can be audited without writing raw full payloads
 - Path-bearing file tools (`read`, `write`, `edit`, `find`, `grep`, `ls`) evaluate `special.external_directory` before their normal tool permission when an explicit path points outside `ctx.cwd`
 
 ## Configuration
@@ -432,7 +433,7 @@ Default global logs directory: ~/.pi/agent/extensions/pi-permission-system/logs/
 Actual global logs directory: $PI_CODING_AGENT_DIR/extensions/pi-permission-system/logs when PI_CODING_AGENT_DIR is set
 ```
 
-- `pi-permission-system-permission-review.jsonl` — enabled by default for permission review/audit history
+- `pi-permission-system-permission-review.jsonl` — enabled by default for permission review/audit history, including bounded `toolInputPreview` values for non-bash/non-MCP tool calls
 - `pi-permission-system-debug.jsonl` — disabled by default and intended for troubleshooting
 
 ### Architecture

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-04-28
+
+### Added
+- Added bounded, sanitized tool input previews to permission review logs for non-bash/non-MCP tool calls, inspired by PR #10 from @DevkumarPatel.
+
+### Changed
+- Reused the extension's safe JSON serialization path for generic tool approval previews so circular values and BigInts are summarized without raw full-input logging.
+- Updated `@mariozechner/pi-ai`, `@mariozechner/pi-coding-agent`, and `@mariozechner/pi-tui` peer dependencies to `^0.70.5`.
+
 ## [0.4.5] - 2026-04-27
 
 ### Fixed

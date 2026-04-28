@@ -9,7 +9,7 @@ import {
   type PermissionSystemExtensionConfig,
 } from "./extension-config.js";
 
-function safeJsonStringify(value: unknown): string {
+export function safeJsonStringify(value: unknown): string | undefined {
   const seen = new WeakSet<object>();
   return JSON.stringify(value, (_key, currentValue) => {
     if (currentValue instanceof Error) {
@@ -66,6 +66,9 @@ export function createPermissionSystemLogger(options: PermissionSystemLoggerOpti
         event,
         ...details,
       });
+      if (!line) {
+        return `Failed to write permission-system ${stream} log '${path}': event could not be serialized.`;
+      }
       appendFileSync(path, `${line}\n`, "utf-8");
       return undefined;
     } catch (error) {
