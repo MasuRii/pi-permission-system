@@ -8,3 +8,6 @@ config:
   line-length: false
   no-duplicate-heading:
     siblings_only: true
+  # MD060/table-column-style is noisy for hand-authored tables with varied
+  # content widths. We care that tables render, not that every pipe lines up.
+  table-column-style: false

@@ -4,9 +4,6 @@
 
 Permission enforcement extension for the Pi coding agent that provides centralized, deterministic permission gates for tool, bash, MCP, skill, and special operations.
 
-<img width="1360" height="752" alt="image" src="https://github.com/user-attachments/assets/3e85190a-17fa-4d94-ac8e-efa54337df5d" />
-
-
 ## Features
 
 - **Tool Filtering** — Hides disallowed tools from the agent before it starts (reduces "try another tool" behavior)
@@ -65,7 +62,7 @@ Pi auto-discovers extensions in these paths.
 }
 ```
 
-2. Start Pi — the extension automatically loads and enforces your policy.
+1. Start Pi — the extension automatically loads and enforces your policy.
 
 ### Permission States
 
@@ -88,6 +85,7 @@ The extension integrates via Pi's lifecycle hooks:
 | `input`              | Intercepts `/skill:<name>` requests and enforces skill policy                             |
 
 **Additional behaviors:**
+
 - Unknown/unregistered tools are blocked before permission checks (prevents bypass attempts)
 - The `Available tools:` system prompt section is rewritten to match the filtered active tool set
 - Extension-provided tools like `task`, `mcp`, and third-party tools are handled by exact registered name instead of private built-in hardcodes
@@ -176,6 +174,7 @@ The extension can also layer project-local permission files relative to the acti
 Project-local files use the same formats as the global policy file and global agent frontmatter. These project files are resolved from Pi's current session `cwd`, so they are workspace-specific and do **not** move under `PI_CODING_AGENT_DIR`.
 
 **Precedence order:**
+
 1. Global policy file
 2. Project policy file
 3. Global agent frontmatter
@@ -297,6 +296,7 @@ permission:
 ```
 
 The permission resolution order for MCP operations:
+
 1. Specific `mcp` patterns (e.g., `myServer:toolName`, `myServer_*`)
 2. `tools.mcp` fallback (if set)
 3. `defaultPolicy.mcp`
@@ -438,7 +438,7 @@ Actual global logs directory: $PI_CODING_AGENT_DIR/extensions/pi-permission-syst
 
 ### Architecture
 
-```
+```text
 index.ts                    → Root Pi entrypoint shim
 src/
 ├── index.ts                → Extension bootstrap, permission checks, readable prompts, review logging, reload handling, and subagent forwarding
@@ -484,12 +484,14 @@ The extension uses a modular architecture with shared utilities:
 **Goal:** Enforce policy at the host level, not the model level.
 
 **What this stops:**
+
 - Agent calling tools it shouldn't use (e.g., `write`, dangerous `bash`)
 - Tool switching attempts (calling non-existent tool names)
 - Accidental escalation via skill loading
 - Unapproved path-bearing tool access outside the active working directory when `external_directory` is `ask` or `deny`
 
 **Limitations:**
+
 - If a dangerous action is possible via an allowed tool, policy must explicitly restrict it
 - This is a permission decision layer, not a sandbox
 
