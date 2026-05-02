@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mock } from "bun:test";
+import { test, vi } from "vitest";
 
 import {
   DEFAULT_EXTENSION_CONFIG,
@@ -10,13 +10,13 @@ import {
   savePermissionSystemConfig,
   type PermissionSystemExtensionConfig,
 } from "../src/extension-config.js";
-import { runAsyncTest, runTest } from "./test-harness.js";
+import { registerPermissionSystemCommand } from "../src/config-modal.js";
 
-mock.module("@mariozechner/pi-coding-agent", () => ({
+vi.mock("@mariozechner/pi-coding-agent", () => ({
   getSettingsListTheme: () => ({}),
 }));
 
-mock.module("@mariozechner/pi-tui", () => ({
+vi.mock("@mariozechner/pi-tui", () => ({
   Box: class {},
   Container: class {
     addChild(): void {}
@@ -38,8 +38,6 @@ mock.module("@mariozechner/pi-tui", () => ({
   truncateToWidth: (text: string) => text,
   visibleWidth: (text: string) => text.length,
 }));
-
-const { registerPermissionSystemCommand } = await import("../src/config-modal.js");
 
 type Notification = { message: string; level: "info" | "warning" | "error" };
 
@@ -79,7 +77,7 @@ function lastNotification(notifications: Notification[]): Notification {
   return notifications[notifications.length - 1] as Notification;
 }
 
-runTest("permission-system command completions expose top-level config actions", () => {
+test("permission-system command completions expose top-level config actions", () => {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-command-completions-"));
   const configPath = join(baseDir, "config.json");
   let config: PermissionSystemExtensionConfig = { ...DEFAULT_EXTENSION_CONFIG };
@@ -125,7 +123,7 @@ runTest("permission-system command completions expose top-level config actions",
   }
 });
 
-await runAsyncTest("permission-system command handlers manage config summary, persistence, and modal routing", async () => {
+test("permission-system command handlers manage config summary, persistence, and modal routing", async () => {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-command-"));
   const configPath = join(baseDir, "config.json");
   let config: PermissionSystemExtensionConfig = {
@@ -205,4 +203,3 @@ await runAsyncTest("permission-system command handlers manage config summary, pe
   }
 });
 
-console.log("All permission-system config-modal tests passed.");

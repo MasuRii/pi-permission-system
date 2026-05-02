@@ -18,9 +18,10 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "npx --yes -p typescript@5.7.3 tsc -p tsconfig.json --noCheck",
+    "build": "tsc -p tsconfig.json",
     "lint": "npm run build",
-    "test": "bun ./tests/permission-system.test.ts && bun ./tests/config-modal.test.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "check": "npm run lint && npm run test"
   },
   "keywords": [
@@ -61,5 +62,14 @@
     "@mariozechner/pi-coding-agent": "^0.70.5",
     "@mariozechner/pi-tui": "^0.70.5",
     "@sinclair/typebox": "^0.34.49"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-ai": "^0.70.5",
+    "@mariozechner/pi-coding-agent": "^0.70.5",
+    "@mariozechner/pi-tui": "^0.70.5",
+    "@sinclair/typebox": "^0.34.49",
+    "@types/node": "^22.19.17",
+    "typescript": "6.0.3",
+    "vitest": "^4.1.5"
   }
 }

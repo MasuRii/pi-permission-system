@@ -1294,7 +1294,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
   });
 
-  pi.on("session_switch", async (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     runtimeContext = ctx;
     refreshExtensionConfig(ctx);
     permissionManager = createPermissionManagerForCwd(ctx.cwd);
