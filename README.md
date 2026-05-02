@@ -108,7 +108,8 @@ The extension creates this file automatically when it is missing. It controls on
 {
   "debugLog": false,
   "permissionReviewLog": true,
-  "yoloMode": false
+  "yoloMode": false,
+  "yoloStatusMessage": "YOLO mode enabled 🚀 "
 }
 ```
 
@@ -117,6 +118,7 @@ The extension creates this file automatically when it is missing. It controls on
 | `debugLog` | `false` | Enables verbose diagnostic logging to `logs/pi-permission-system-debug.jsonl` |
 | `permissionReviewLog` | `true` | Enables the permission request/denial review log at `logs/pi-permission-system-permission-review.jsonl` |
 | `yoloMode` | `false` | Auto-approves `ask` results instead of prompting when yolo mode is enabled |
+| `yoloStatusMessage` | `"YOLO mode enabled 🚀 "` | Status text shown when yolo mode is enabled. Set to `null` to hide status entirely. |
 
 Both logs write to files only under the extension directory. No debug output is printed to the terminal.
 

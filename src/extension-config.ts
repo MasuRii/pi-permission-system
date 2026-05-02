@@ -10,6 +10,7 @@ export interface PermissionSystemExtensionConfig {
   debugLog: boolean;
   permissionReviewLog: boolean;
   yoloMode: boolean;
+  yoloStatusMessage: string | null;
 }
 
 export interface PermissionSystemConfigLoadResult {
@@ -27,6 +28,7 @@ export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
   debugLog: false,
   permissionReviewLog: true,
   yoloMode: false,
+  yoloStatusMessage: "YOLO mode enabled 🚀 ",
 };
 
 export function resolveExtensionRoot(moduleUrl = import.meta.url): string {
@@ -44,6 +46,7 @@ function cloneDefaultConfig(): PermissionSystemExtensionConfig {
     debugLog: DEFAULT_EXTENSION_CONFIG.debugLog,
     permissionReviewLog: DEFAULT_EXTENSION_CONFIG.permissionReviewLog,
     yoloMode: DEFAULT_EXTENSION_CONFIG.yoloMode,
+    yoloStatusMessage: DEFAULT_EXTENSION_CONFIG.yoloStatusMessage,
   };
 }
 
@@ -53,10 +56,19 @@ function createDefaultConfigContent(): string {
 
 export function normalizePermissionSystemConfig(raw: unknown): PermissionSystemExtensionConfig {
   const record = toRecord(raw);
+
+  let yoloStatusMessage = DEFAULT_EXTENSION_CONFIG.yoloStatusMessage;
+  if (record.yoloStatusMessage === null) {
+    yoloStatusMessage = null;
+  } else if (typeof record.yoloStatusMessage === "string") {
+    yoloStatusMessage = record.yoloStatusMessage;
+  }
+
   return {
     debugLog: record.debugLog === true,
     permissionReviewLog: record.permissionReviewLog !== false,
     yoloMode: record.yoloMode === true,
+    yoloStatusMessage,
   };
 }
 

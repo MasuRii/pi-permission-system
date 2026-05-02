@@ -9,7 +9,13 @@ import {
   createBeforeAgentStartPromptStateKey,
   shouldApplyCachedAgentStartState,
 } from "../src/before-agent-start-cache.js";
-import { CONFIG_PATH, DEFAULT_EXTENSION_CONFIG, loadPermissionSystemConfig, savePermissionSystemConfig } from "../src/extension-config.js";
+import {
+  CONFIG_PATH,
+  DEFAULT_EXTENSION_CONFIG,
+  loadPermissionSystemConfig,
+  normalizePermissionSystemConfig,
+  savePermissionSystemConfig,
+} from "../src/extension-config.js";
 import { createPermissionSystemLogger } from "../src/logging.js";
 import {
   createPermissionForwardingLocation,
@@ -251,6 +257,7 @@ runTest("Permission-system extension config loads yolo mode when explicitly enab
       debugLog: true,
       permissionReviewLog: false,
       yoloMode: true,
+      yoloStatusMessage: "YOLO mode enabled 🚀 ",
     });
   } finally {
     rmSync(baseDir, { recursive: true, force: true });
@@ -303,6 +310,7 @@ runTest("Permission-system extension config save persists normalized config", ()
       debugLog: true,
       permissionReviewLog: false,
       yoloMode: true,
+      yoloStatusMessage: "YOLO mode enabled 🚀 ",
     });
   } finally {
     rmSync(baseDir, { recursive: true, force: true });
@@ -356,8 +364,20 @@ runTest("Permission-system status is only exposed when yolo mode is enabled", ()
   assert.equal(getPermissionSystemStatus(DEFAULT_EXTENSION_CONFIG), undefined);
   assert.equal(
     getPermissionSystemStatus({ ...DEFAULT_EXTENSION_CONFIG, yoloMode: true }),
-    "yolo",
+    "YOLO mode enabled 🚀 ",
   );
+  assert.equal(
+    getPermissionSystemStatus({ ...DEFAULT_EXTENSION_CONFIG, yoloMode: true, yoloStatusMessage: null }),
+    undefined,
+  );
+});
+
+runTest("Extension config allows disabling YOLO status text with null", () => {
+  const normalized = normalizePermissionSystemConfig({
+    yoloStatusMessage: null,
+  });
+
+  assert.equal(normalized.yoloStatusMessage, null);
 });
 
 runTest("System prompt sanitizer removes the Available tools section and surrounding boilerplate", () => {

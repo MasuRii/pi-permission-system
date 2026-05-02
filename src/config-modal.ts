@@ -44,6 +44,7 @@ function cloneDefaultConfig(): PermissionSystemExtensionConfig {
     debugLog: DEFAULT_EXTENSION_CONFIG.debugLog,
     permissionReviewLog: DEFAULT_EXTENSION_CONFIG.permissionReviewLog,
     yoloMode: DEFAULT_EXTENSION_CONFIG.yoloMode,
+    yoloStatusMessage: DEFAULT_EXTENSION_CONFIG.yoloStatusMessage,
   };
 }
 
