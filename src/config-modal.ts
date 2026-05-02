@@ -45,6 +45,9 @@ function cloneDefaultConfig(): PermissionSystemExtensionConfig {
     permissionReviewLog: DEFAULT_EXTENSION_CONFIG.permissionReviewLog,
     yoloMode: DEFAULT_EXTENSION_CONFIG.yoloMode,
     yoloStatusMessage: DEFAULT_EXTENSION_CONFIG.yoloStatusMessage,
+    shortcutBindings: {
+      toggleYoloMode: DEFAULT_EXTENSION_CONFIG.shortcutBindings.toggleYoloMode,
+    },
   };
 }
 

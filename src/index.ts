@@ -47,6 +47,7 @@ import type { PermissionCheckResult } from "./types.js";
 import { PERMISSION_SYSTEM_STATUS_KEY, syncPermissionSystemStatus } from "./status.js";
 import { canResolveAskPermissionRequest, shouldAutoApprovePermissionState } from "./yolo-mode.js";
 import { registerModelOptionCompatibilityGuard } from "./model-option-compatibility.js";
+import { registerConfiguredShortcuts, type ShortcutActionDefinition } from "./shortcuts.js";
 
 const PI_AGENT_DIR = getAgentDir();
 const SESSIONS_DIR = join(PI_AGENT_DIR, "sessions");
@@ -1061,7 +1062,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     });
   };
 
-  const saveExtensionConfig = (next: PermissionSystemExtensionConfig, ctx: ExtensionCommandContext): void => {
+  const saveExtensionConfig = (next: PermissionSystemExtensionConfig, ctx: ExtensionContext): void => {
     const normalized = normalizePermissionSystemConfig(next);
     const saved = savePermissionSystemConfig(normalized);
     if (!saved.success) {
@@ -1091,6 +1092,32 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     setConfig: saveExtensionConfig,
     getConfigPath: getPermissionSystemConfigPath,
   });
+
+  const shortcutActions: ShortcutActionDefinition[] = [
+    {
+      id: "toggleYoloMode",
+      description: "Toggle pi-permission-system YOLO mode",
+      getShortcut: (config) => config.shortcutBindings.toggleYoloMode,
+      handler: (ctx) => {
+        const nextConfig: PermissionSystemExtensionConfig = {
+          ...extensionConfig,
+          yoloMode: !extensionConfig.yoloMode,
+        };
+        saveExtensionConfig(nextConfig, ctx);
+        ctx.ui.notify(`YOLO mode ${nextConfig.yoloMode ? "enabled" : "disabled"}.`, "info");
+      },
+    },
+  ];
+
+  registerConfiguredShortcuts(
+    pi,
+    extensionConfig,
+    shortcutActions,
+    (message) => {
+      writeDebugLog("shortcut.register_failed", { message });
+      notifyWarning(message);
+    },
+  );
 
   const createPermissionRequestId = (prefix: string): string => {
     return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}-${process.pid}`;

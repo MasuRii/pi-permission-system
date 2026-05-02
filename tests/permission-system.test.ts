@@ -78,6 +78,12 @@ type MockHandler = (
   ctx: Record<string, unknown>,
 ) => Promise<Record<string, unknown> | void> | Record<string, unknown> | void;
 
+type ShortcutRegistration = {
+  shortcut: string;
+  description: string | undefined;
+  handler: (ctx: Record<string, unknown>) => Promise<void> | void;
+};
+
 type ExtensionHarness = {
   baseDir: string;
   cwd: string;
@@ -141,12 +147,13 @@ function createToolCallHarness(
       on: (name: string, handler: MockHandler): void => {
         handlers[name] = handler;
       },
-      registerCommand: (): void => {},
+      registerCommand: (): void => { },
+      registerShortcut: (): void => { },
       getAllTools: (): Array<{ name: string }> => toolNames.map((name) => ({ name })),
-      setActiveTools: (): void => {},
-      registerProvider: (): void => {},
+      setActiveTools: (): void => { },
+      registerProvider: (): void => { },
       events: {
-        emit: (): void => {},
+        emit: (): void => { },
       },
     } as never);
   } finally {
@@ -190,8 +197,8 @@ function createMockContext(
       getSessionDir: (): string => cwd,
     },
     ui: {
-      notify: (): void => {},
-      setStatus: (): void => {},
+      notify: (): void => { },
+      setStatus: (): void => { },
       select: async (title: string): Promise<string | undefined> => {
         prompts.push(title);
         return options.selectResponse ?? "Yes";
@@ -258,6 +265,9 @@ runTest("Permission-system extension config loads yolo mode when explicitly enab
       permissionReviewLog: false,
       yoloMode: true,
       yoloStatusMessage: "YOLO mode enabled 🚀 ",
+      shortcutBindings: {
+        toggleYoloMode: "f8",
+      },
     });
   } finally {
     rmSync(baseDir, { recursive: true, force: true });
@@ -311,6 +321,9 @@ runTest("Permission-system extension config save persists normalized config", ()
       permissionReviewLog: false,
       yoloMode: true,
       yoloStatusMessage: "YOLO mode enabled 🚀 ",
+      shortcutBindings: {
+        toggleYoloMode: "f8",
+      },
     });
   } finally {
     rmSync(baseDir, { recursive: true, force: true });
@@ -378,6 +391,187 @@ runTest("Extension config allows disabling YOLO status text with null", () => {
   });
 
   assert.equal(normalized.yoloStatusMessage, null);
+});
+
+runTest("Extension config allows disabling YOLO shortcut with null", () => {
+  const normalized = normalizePermissionSystemConfig({
+    shortcutBindings: {
+      toggleYoloMode: null,
+    },
+  });
+
+  assert.equal(normalized.shortcutBindings.toggleYoloMode, null);
+});
+
+await runAsyncTest("Extension registers f8 shortcut for YOLO toggle", async () => {
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const originalExtensionConfig = existsSync(CONFIG_PATH) ? readFileSync(CONFIG_PATH, "utf8") : null;
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-shortcut-"));
+  const shortcuts: ShortcutRegistration[] = [];
+
+  mkdirSync(join(baseDir, "agents"), { recursive: true });
+  writeFileSync(join(baseDir, "pi-permissions.jsonc"), `${JSON.stringify({ defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "allow" } }, null, 2)}\n`, "utf8");
+  writeFileSync(CONFIG_PATH, `${JSON.stringify(DEFAULT_EXTENSION_CONFIG, null, 2)}\n`, "utf8");
+  process.env.PI_CODING_AGENT_DIR = baseDir;
+
+  try {
+    piPermissionSystemExtension({
+      on: (): void => { },
+      registerCommand: (): void => { },
+      registerShortcut: (shortcut: string, definition: { description?: string; handler: (ctx: Record<string, unknown>) => Promise<void> | void }): void => {
+        shortcuts.push({ shortcut, description: definition.description, handler: definition.handler });
+      },
+      getAllTools: (): Array<{ name: string }> => [],
+      setActiveTools: (): void => { },
+      registerProvider: (): void => { },
+      events: {
+        emit: (): void => { },
+      },
+    } as never);
+
+    assert.equal(shortcuts.some((entry) => entry.shortcut === "f8"), true);
+  } finally {
+    if (originalAgentDir === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR;
+    } else {
+      process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    }
+    if (originalExtensionConfig === null) {
+      if (existsSync(CONFIG_PATH)) {
+        unlinkSync(CONFIG_PATH);
+      }
+    } else {
+      writeFileSync(CONFIG_PATH, originalExtensionConfig, "utf8");
+    }
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+await runAsyncTest("Extension does not register YOLO shortcut when disabled", async () => {
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const originalExtensionConfig = existsSync(CONFIG_PATH) ? readFileSync(CONFIG_PATH, "utf8") : null;
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-shortcut-disabled-"));
+  const shortcuts: ShortcutRegistration[] = [];
+
+  mkdirSync(join(baseDir, "agents"), { recursive: true });
+  writeFileSync(join(baseDir, "pi-permissions.jsonc"), `${JSON.stringify({ defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "allow" } }, null, 2)}\n`, "utf8");
+  writeFileSync(
+    CONFIG_PATH,
+    `${JSON.stringify({ ...DEFAULT_EXTENSION_CONFIG, shortcutBindings: { toggleYoloMode: null } }, null, 2)}\n`,
+    "utf8",
+  );
+  process.env.PI_CODING_AGENT_DIR = baseDir;
+
+  try {
+    piPermissionSystemExtension({
+      on: (): void => { },
+      registerCommand: (): void => { },
+      registerShortcut: (shortcut: string, definition: { description?: string; handler: (ctx: Record<string, unknown>) => Promise<void> | void }): void => {
+        shortcuts.push({ shortcut, description: definition.description, handler: definition.handler });
+      },
+      getAllTools: (): Array<{ name: string }> => [],
+      setActiveTools: (): void => { },
+      registerProvider: (): void => { },
+      events: {
+        emit: (): void => { },
+      },
+    } as never);
+
+    assert.equal(shortcuts.length, 0);
+  } finally {
+    if (originalAgentDir === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR;
+    } else {
+      process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    }
+    if (originalExtensionConfig === null) {
+      if (existsSync(CONFIG_PATH)) {
+        unlinkSync(CONFIG_PATH);
+      }
+    } else {
+      writeFileSync(CONFIG_PATH, originalExtensionConfig, "utf8");
+    }
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+await runAsyncTest("YOLO shortcut toggles mode and persists config", async () => {
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const originalExtensionConfig = existsSync(CONFIG_PATH) ? readFileSync(CONFIG_PATH, "utf8") : null;
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-shortcut-toggle-"));
+  const shortcuts: ShortcutRegistration[] = [];
+  const statusUpdates: Array<{ key: string; value: string | undefined }> = [];
+
+  mkdirSync(join(baseDir, "agents"), { recursive: true });
+  writeFileSync(join(baseDir, "pi-permissions.jsonc"), `${JSON.stringify({ defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "allow" } }, null, 2)}\n`, "utf8");
+  writeFileSync(CONFIG_PATH, `${JSON.stringify(DEFAULT_EXTENSION_CONFIG, null, 2)}\n`, "utf8");
+  process.env.PI_CODING_AGENT_DIR = baseDir;
+
+  try {
+    piPermissionSystemExtension({
+      on: (): void => { },
+      registerCommand: (): void => { },
+      registerShortcut: (shortcut: string, definition: { description?: string; handler: (ctx: Record<string, unknown>) => Promise<void> | void }): void => {
+        shortcuts.push({ shortcut, description: definition.description, handler: definition.handler });
+      },
+      getAllTools: (): Array<{ name: string }> => [],
+      setActiveTools: (): void => { },
+      registerProvider: (): void => { },
+      events: {
+        emit: (): void => { },
+      },
+    } as never);
+
+    const shortcut = shortcuts.find((entry) => entry.shortcut === "f8");
+    assert.ok(shortcut);
+
+    await Promise.resolve(
+      shortcut.handler({
+        hasUI: true,
+        cwd: baseDir,
+        sessionManager: {
+          getEntries: (): unknown[] => [],
+          getSessionId: (): string => "test-session",
+          getSessionDir: (): string => baseDir,
+        },
+        ui: {
+          notify: (): void => { },
+          select: async (): Promise<string | undefined> => undefined,
+          confirm: async (): Promise<boolean> => false,
+          input: async (): Promise<string | undefined> => undefined,
+          custom: async (): Promise<unknown> => undefined,
+          setStatus: (key: string, value: string | undefined): void => {
+            statusUpdates.push({ key, value });
+          },
+        },
+      }),
+    );
+
+    const loaded = loadPermissionSystemConfig();
+    assert.equal(loaded.config.yoloMode, true);
+    assert.equal(
+      statusUpdates.some(
+        (entry) =>
+          entry.key === "pi-permission-system" &&
+          entry.value === DEFAULT_EXTENSION_CONFIG.yoloStatusMessage,
+      ),
+      true,
+    );
+  } finally {
+    if (originalAgentDir === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR;
+    } else {
+      process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    }
+    if (originalExtensionConfig === null) {
+      if (existsSync(CONFIG_PATH)) {
+        unlinkSync(CONFIG_PATH);
+      }
+    } else {
+      writeFileSync(CONFIG_PATH, originalExtensionConfig, "utf8");
+    }
+    rmSync(baseDir, { recursive: true, force: true });
+  }
 });
 
 runTest("System prompt sanitizer removes the Available tools section and surrounding boilerplate", () => {

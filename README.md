@@ -102,14 +102,17 @@ The extension integrates via Pi's lifecycle hooks:
 
 **Location:** global Pi extension config (default: `~/.pi/agent/extensions/pi-permission-system/config.json`, respects `PI_CODING_AGENT_DIR`)
 
-The extension creates this file automatically when it is missing. It controls only extension-local logging behavior:
+The extension creates this file automatically when it is missing. It controls extension-local logging, yolo mode, status text, and shortcut bindings:
 
 ```json
 {
   "debugLog": false,
   "permissionReviewLog": true,
   "yoloMode": false,
-  "yoloStatusMessage": "YOLO mode enabled 🚀 "
+  "yoloStatusMessage": "YOLO mode enabled 🚀 ",
+  "shortcutBindings": {
+    "toggleYoloMode": "f8"
+  }
 }
 ```
 
@@ -119,6 +122,7 @@ The extension creates this file automatically when it is missing. It controls on
 | `permissionReviewLog` | `true` | Enables the permission request/denial review log at `logs/pi-permission-system-permission-review.jsonl` |
 | `yoloMode` | `false` | Auto-approves `ask` results instead of prompting when yolo mode is enabled |
 | `yoloStatusMessage` | `"YOLO mode enabled 🚀 "` | Status text shown when yolo mode is enabled. Set to `null` to hide status entirely. |
+| `shortcutBindings.toggleYoloMode` | `"f8"` | Keyboard shortcut that toggles yolo mode. Set to `null` to disable shortcut registration. |
 
 Both logs write to files only under the extension directory. No debug output is printed to the terminal.
 

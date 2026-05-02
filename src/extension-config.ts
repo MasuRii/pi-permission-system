@@ -6,11 +6,16 @@ import { toRecord } from "./common.js";
 
 export const EXTENSION_ID = "pi-permission-system";
 
+export interface PermissionSystemShortcutBindings {
+  toggleYoloMode: string | null;
+}
+
 export interface PermissionSystemExtensionConfig {
   debugLog: boolean;
   permissionReviewLog: boolean;
   yoloMode: boolean;
   yoloStatusMessage: string | null;
+  shortcutBindings: PermissionSystemShortcutBindings;
 }
 
 export interface PermissionSystemConfigLoadResult {
@@ -29,6 +34,9 @@ export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
   permissionReviewLog: true,
   yoloMode: false,
   yoloStatusMessage: "YOLO mode enabled 🚀 ",
+  shortcutBindings: {
+    toggleYoloMode: "f8",
+  },
 };
 
 export function resolveExtensionRoot(moduleUrl = import.meta.url): string {
@@ -47,6 +55,9 @@ function cloneDefaultConfig(): PermissionSystemExtensionConfig {
     permissionReviewLog: DEFAULT_EXTENSION_CONFIG.permissionReviewLog,
     yoloMode: DEFAULT_EXTENSION_CONFIG.yoloMode,
     yoloStatusMessage: DEFAULT_EXTENSION_CONFIG.yoloStatusMessage,
+    shortcutBindings: {
+      toggleYoloMode: DEFAULT_EXTENSION_CONFIG.shortcutBindings.toggleYoloMode,
+    },
   };
 }
 
@@ -56,6 +67,15 @@ function createDefaultConfigContent(): string {
 
 export function normalizePermissionSystemConfig(raw: unknown): PermissionSystemExtensionConfig {
   const record = toRecord(raw);
+  const shortcutBindingsRecord = toRecord(record.shortcutBindings);
+
+  let toggleYoloMode = DEFAULT_EXTENSION_CONFIG.shortcutBindings.toggleYoloMode;
+  if (shortcutBindingsRecord.toggleYoloMode === null) {
+    toggleYoloMode = null;
+  } else if (typeof shortcutBindingsRecord.toggleYoloMode === "string") {
+    const normalizedShortcut = shortcutBindingsRecord.toggleYoloMode.trim();
+    toggleYoloMode = normalizedShortcut.length > 0 ? normalizedShortcut : null;
+  }
 
   let yoloStatusMessage = DEFAULT_EXTENSION_CONFIG.yoloStatusMessage;
   if (record.yoloStatusMessage === null) {
@@ -69,6 +89,9 @@ export function normalizePermissionSystemConfig(raw: unknown): PermissionSystemE
     permissionReviewLog: record.permissionReviewLog !== false,
     yoloMode: record.yoloMode === true,
     yoloStatusMessage,
+    shortcutBindings: {
+      toggleYoloMode,
+    },
   };
 }
 
