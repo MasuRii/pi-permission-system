@@ -20,7 +20,7 @@
   "scripts": {
     "build": "npx --yes -p typescript@5.7.3 tsc -p tsconfig.json --noCheck",
     "lint": "npm run build",
-    "test": "bun ./tests/permission-system.test.ts && bun ./tests/config-modal.test.ts",
+    "test": "bun ./tests/permission-system.test.ts && bun ./tests/config-modal.test.ts && bun ./tests/shortcuts.test.ts",
     "check": "npm run lint && npm run test"
   },
   "keywords": [

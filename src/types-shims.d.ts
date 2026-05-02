@@ -115,6 +115,13 @@ declare module "@mariozechner/pi-coding-agent" {
         handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> | void;
       },
     ): void;
+    registerShortcut(
+      shortcut: string,
+      definition: {
+        description?: string;
+        handler: (ctx: ExtensionContext) => Promise<void> | void;
+      },
+    ): void;
     events: {
       emit(channel: string, payload: unknown): void;
     };
