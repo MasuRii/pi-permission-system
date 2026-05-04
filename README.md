@@ -6,6 +6,87 @@ Permission enforcement extension for the Pi coding agent that provides centraliz
 
 <img width="1360" height="752" alt="image" src="https://github.com/user-attachments/assets/3e85190a-17fa-4d94-ac8e-efa54337df5d" />
 
+## Coming from OpenCode?
+
+Yes — this extension was designed so OpenCode-style agent permission policies can be ported into Pi with minimal friction.
+
+### Start here
+
+| If you have this in OpenCode | In Pi, use this |
+|---|---|
+| Agent markdown file | `~/.pi/agent/agents/<agent-name>.md` (respects `PI_CODING_AGENT_DIR`) |
+| YAML frontmatter | Same place: top of the markdown file |
+| Agent instructions / system prompt body | Same file, below frontmatter |
+| Agent permission rules | `permission:` inside that same frontmatter |
+
+### Important compatibility notes
+
+- **Agents are still markdown files with YAML frontmatter.**
+- **Wildcard permissions still use last-match-wins ordering.**
+- **Keep frontmatter simple when porting.** This extension intentionally supports `key: value` scalars and nested maps, not full YAML features like arrays, anchors, or multiline scalars.
+
+### Minimal Pi agent example
+
+```md
+---
+name: my-agent
+mode: primary
+description: My ported agent
+permission:
+  tools:
+    read: allow
+    grep: allow
+  bash:
+    "*": ask
+  mcp:
+    "*": ask
+---
+
+Your agent instructions go here.
+```
+
+### Compatibility matrix
+
+| OpenCode concept | Pi equivalent with this extension | Compatibility | Porting notes |
+|---|---|---:|---|
+| Agent markdown files with YAML frontmatter | `~/.pi/agent/agents/<agent-name>.md` | High | Your agent-local `permission:` frontmatter pattern carries over cleanly. |
+| Wildcard precedence | Same last-declared-match-wins behavior | High | Broad rules first, specific overrides later. |
+| `bash` permission rules | `permission.bash` | High | Command-pattern gating ports cleanly. |
+| Per-tool permission rules like `read`, `grep`, `list`, `task`, or arbitrary extension tool names | `permission.tools` | Medium-High | Pi groups registered tool names under `tools`, including built-ins and extension tools. |
+| `external_directory` | `permission.special.external_directory` | Medium | Same idea, different location. |
+| `doom_loop` | `permission.special.doom_loop` | Medium | Same idea, different location. |
+| `skill` permission rules | `permission.skills` | Medium | Same purpose, but Pi uses a dedicated plural `skills` section. |
+| MCP-related access | `permission.mcp` for proxy targets, `permission.tools` for direct registered tools | Medium | This is the biggest Pi-specific difference: proxy MCP targets and direct tool names are intentionally split. |
+| OpenCode-specific permissions like `webfetch`, `websearch`, `question`, `lsp`, `todowrite` | Usually extension-specific Pi tool names under `permission.tools` | Low-Medium | These do not have universal built-in one-to-one Pi names; map them to the actual registered tools available in your Pi setup. |
+
+### Most important difference
+
+In OpenCode, many permission names live in one broad permission namespace. In Pi with this extension, there is a deliberate split:
+
+| Use this when... | Put the rule here |
+|---|---|
+| You are targeting the registered **`mcp` proxy tool** and its internal server/tool targets | `permission.mcp` |
+| You are targeting an actual registered tool name, including direct extension tools like `context7_*`, `github_*`, or `exa_*` | `permission.tools` |
+
+### Fast porting guide
+
+| If your OpenCode agent has... | In Pi, do this |
+|---|---|
+| `permission.bash` rules | Move them into `permission.bash` |
+| `permission.external_directory` | Move it to `permission.special.external_directory` |
+| `permission.doom_loop` | Move it to `permission.special.doom_loop` |
+| `permission.skill` rules | Move them to `permission.skills` |
+| Tool-ish permissions like `read`, `grep`, `list`, `task`, or third-party tool names | Put them in `permission.tools` |
+| MCP server/tool target logic | Put proxy-target rules in `permission.mcp` |
+
+### Practical takeaway
+
+If you are coming from OpenCode, you usually do **not** need to rewrite your whole agent. In most cases, porting is just:
+
+1. Keep the agent markdown/frontmatter structure.
+2. Move OpenCode-style tool permissions into Pi's `tools` section.
+3. Move `external_directory` and `doom_loop` into `special`.
+4. Split MCP proxy target rules into `mcp` and direct registered tool rules into `tools`.
 
 ## Features
 
@@ -17,6 +98,7 @@ Permission enforcement extension for the Pi coding agent that provides centraliz
 - **Skill Protection** — Controls which skills can be loaded or read from disk, including multi-block prompt sanitization
 - **Per-Agent Overrides** — Agent-specific permission policies via YAML frontmatter
 - **Subagent Permission Forwarding** — Forwards `ask` confirmations from non-UI subagents back to the main interactive session
+- **Runtime YOLO Control** — Lets users toggle yolo mode from the settings modal and lets other extensions toggle it through the runtime API
 - **File-Based Review Logging** — Writes permission request/denial review entries to a file by default for later auditing
 - **Optional Debug Logging** — Keeps verbose extension diagnostics in a separate file when enabled in `config.json`
 - **JSON Schema Validation** — Full schema for editor autocomplete and config validation
@@ -41,7 +123,7 @@ Place this folder in one of the following locations:
 
 Pi auto-discovers extensions in these paths.
 
-> **Tip:** All `~/.pi/agent` paths shown in this document are defaults. If the `PI_CODING_AGENT_DIR` environment variable is set, pi uses that directory instead. The extension automatically follows pi's `getAgentDir()` helper, so global policy files, per-agent overrides, session directories, and extension installation paths all resolve under the configured agent directory.
+> **Tip:** All `~/.pi/agent` paths shown in this document are defaults. If the `PI_CODING_AGENT_DIR` environment variable is set, pi uses that directory instead. The extension automatically follows pi's `getAgentDir()` helper for extension installation, session directories, and extension-local config paths. If you need policy lookup to come from a different global agent root, set `PI_PERMISSION_SYSTEM_POLICY_AGENT_DIR`.
 
 ## Usage
 
@@ -90,10 +172,10 @@ The extension integrates via Pi's lifecycle hooks:
 **Additional behaviors:**
 - Unknown/unregistered tools are blocked before permission checks (prevents bypass attempts)
 - The `Available tools:` system prompt section is rewritten to match the filtered active tool set
-- Extension-provided tools like `task`, `mcp`, and third-party tools are handled by exact registered name instead of private built-in hardcodes
+- Extension-provided tools like `task`, `mcp`, and third-party tools are handled through the same registered-tool permission layer instead of private built-in hardcodes
 - When a subagent hits an `ask` permission without direct UI access, the request can be forwarded to the main interactive session for confirmation
 - Generic extension-tool approval prompts include a bounded input preview; built-in file tools use concise human-readable summaries instead of raw multiline JSON
-- Permission review logs include redacted prompt/input metadata for auditing without writing raw prompts, commands, or tool payload previews
+- Permission review logs include requested bash command text plus redacted prompt/input metadata for auditing without writing raw prompts or generic tool payload previews
 - Path-bearing file tools (`read`, `write`, `edit`, `find`, `grep`, `ls`) evaluate `special.external_directory` before their normal tool permission when an explicit path points outside `ctx.cwd`
 
 ## Configuration
@@ -104,7 +186,7 @@ The extension integrates via Pi's lifecycle hooks:
 
 Set `PI_PERMISSION_SYSTEM_CONFIG_PATH` to point this extension at a specific config file when the default global path is not appropriate.
 
-The extension creates this file automatically when it is missing. It controls only extension-local logging behavior:
+The extension creates this file automatically when it is missing. It controls extension-local logging behavior and yolo mode defaults:
 
 ```json
 {
@@ -122,16 +204,43 @@ The extension creates this file automatically when it is missing. It controls on
 
 Both logs write to files only under the extension directory by default. Set `PI_PERMISSION_SYSTEM_LOGS_DIR` to redirect review/debug logs to a specific directory. No debug output is printed to the terminal.
 
+### Runtime YOLO Control
+
+Use `/permission-system` to open the settings modal and inspect or change yolo mode interactively.
+
+Other extensions can toggle yolo mode immediately through the shared runtime API:
+
+```ts
+type PermissionSystemGlobal = typeof globalThis & {
+  __piPermissionSystem?: {
+    toggleYoloMode(options?: { persist?: boolean; source?: string }): { error?: string };
+  };
+};
+
+pi.registerShortcut("f8", {
+  description: "Toggle pi-permission-system YOLO mode",
+  handler: () => {
+    const permissionSystem = (globalThis as PermissionSystemGlobal).__piPermissionSystem;
+    const result = permissionSystem?.toggleYoloMode({ source: "my-extension" });
+    if (result?.error) {
+      // Notify or log the error in your extension.
+    }
+  },
+});
+```
+
+The runtime API exposes `getYoloMode()`, `setYoloMode(enabled, options?)`, and `toggleYoloMode(options?)`. Runtime updates persist to `config.json` by default; pass `{ persist: false }` for a current-session-only toggle.
+
 ### Global Policy File
 
-**Location:** global Pi policy file (default: `~/.pi/agent/pi-permissions.jsonc`, respects `PI_CODING_AGENT_DIR`)
+**Location:** global Pi policy file (default: `~/.pi/agent/pi-permissions.jsonc`, respects `PI_PERMISSION_SYSTEM_POLICY_AGENT_DIR` when set and otherwise follows `PI_CODING_AGENT_DIR`)
 
 The policy file is a JSON object with these sections:
 
 | Section         | Description                                         |
 |-----------------|-----------------------------------------------------|
 | `defaultPolicy` | Fallback permissions per category                   |
-| `tools`         | Exact-name tool permissions for registered tools    |
+| `tools`         | Pattern-based tool permissions for registered tools |
 | `bash`          | Command pattern permissions                         |
 | `mcp`           | MCP server/tool permissions for calls routed through a registered `mcp` tool |
 | `skills`        | Skill name pattern permissions                      |
@@ -141,7 +250,7 @@ The policy file is a JSON object with these sections:
 
 ### Global Per-Agent Overrides
 
-Override global permissions for specific agents via YAML frontmatter in the global Pi agents directory (default: `~/.pi/agent/agents/<agent>.md`, respects `PI_CODING_AGENT_DIR`):
+Override global permissions for specific agents via YAML frontmatter in the global Pi agents directory (default: `~/.pi/agent/agents/<agent-name>.md`, respects `PI_PERMISSION_SYSTEM_POLICY_AGENT_DIR` when set and otherwise follows `PI_CODING_AGENT_DIR`):
 
 ```yaml
 ---
@@ -164,7 +273,7 @@ permission:
 
 **MCP behavior:** `permission.tools.mcp` is the coarse entry/fallback permission for a registered `mcp` tool when one is available. More specific `permission.mcp` target rules override that fallback when they match.
 
-**Limitations:** The frontmatter parser is intentionally minimal. Use only `key: value` scalars and nested maps. Avoid arrays, multi-line scalars, and YAML anchors.
+**Limitations:** The frontmatter parser is intentionally minimal. Use only `key: value` scalars and nested maps. Avoid arrays, multi-line scalars, and YAML anchors. If you are porting from OpenCode, simplify richer YAML frontmatter before expecting a clean migration.
 
 ### Project-Level Policy Files
 
@@ -173,7 +282,7 @@ The extension can also layer project-local permission files relative to the acti
 | Scope | Path |
 |-------|------|
 | Project policy | `<cwd>/.pi/agent/pi-permissions.jsonc` |
-| Project agent override | `<cwd>/.pi/agent/agents/<agent>.md` |
+| Project agent override | `<cwd>/.pi/agent/agents/<agent-name>.md` |
 
 Project-local files use the same formats as the global policy file and global agent frontmatter. These project files are resolved from Pi's current session `cwd`, so they are workspace-specific and do **not** move under `PI_CODING_AGENT_DIR`.
 
@@ -183,7 +292,7 @@ Project-local files use the same formats as the global policy file and global ag
 3. Global agent frontmatter
 4. Project agent frontmatter
 
-Later trusted layers override earlier layers within the same permission category, and project-local layers can tighten policy by adding `deny` rules. Project-local policy cannot relax a `deny` from the global policy file or global agent frontmatter: an `allow` or `ask` in a project policy is ignored when the latest matching trusted layer is `deny`. For wildcard-based sections like `bash`, `mcp`, `skills`, and `special`, matching still follows **last matching rule wins** within the applicable trust boundary, with global/system `deny` rules acting as floors for project-local overrides.
+Later trusted layers override earlier layers within the same permission category, and project-local layers can tighten policy by adding `deny` rules. Project-local policy cannot relax a `deny` from the global policy file or global agent frontmatter: an `allow` or `ask` in a project policy is ignored when the latest matching trusted layer is `deny`. For wildcard-based sections like `tools`, `bash`, `mcp`, `skills`, and `special`, matching still follows **last matching rule wins** within the applicable trust boundary, with global/system `deny` rules acting as floors for project-local overrides.
 
 ---
 
@@ -207,7 +316,7 @@ Sets fallback permissions when no specific rule matches:
 
 ### `tools`
 
-Controls tools by exact registered name (no wildcards). This is the recommended standalone format for **all** tool entries, including Pi built-ins and arbitrary third-party extension tools.
+Controls tools by registered name pattern. This is the recommended standalone format for **all** tool entries, including Pi built-ins and arbitrary third-party extension tools. Patterns use `*` wildcards and follow last-declared-match semantics, so put broad fallbacks first and specific overrides later.
 
 | Tool name example     | Description |
 |-----------------------|-------------|
@@ -216,29 +325,33 @@ Controls tools by exact registered name (no wildcards). This is the recommended 
 | `mcp`                 | Registered MCP proxy tool entry/fallback when available |
 | `task`                | Delegation tool handled like any other registered extension tool |
 | `third_party_tool`    | Arbitrary registered extension tool |
+| `context7_*`          | Wildcard for direct tools registered by another extension |
+| `*`                   | Fallback for every registered tool not matched by a later rule |
 
 ```jsonc
 {
   "tools": {
-    "read": "allow",
-    "write": "deny",
+    "*": "ask",
+    "context7_*": "ask",
+    "third_party_tool": "ask",
     "mcp": "allow",
-    "third_party_tool": "ask"
+    "read": "allow",
+    "write": "deny"
   }
 }
 ```
 
-Unknown or absent tools are not required in the config. If another extension is not installed, its tool simply will not be registered at runtime, and this extension will block attempts to call that missing tool before permission checks run.
+Unknown or absent tools are not required in the config. If another extension is not installed, its tool simply will not be registered at runtime, and this extension will block attempts to call that missing tool before permission checks run. Wildcard `tools` rules apply to direct tools from any extension; no adapter-specific naming is required.
 
 > **Note:** Setting `tools.bash` affects the *default* for bash commands, but `bash` patterns can provide command-level overrides.
 >
-> **Note:** Setting `tools.mcp` controls coarse access to a registered `mcp` tool when one is available. Specific `mcp` rules still override it when a target pattern matches.
+> **Note:** Setting `tools.mcp` controls coarse access to a registered `mcp` proxy tool when one is available. Specific `mcp` rules still override it when a proxy target pattern matches. Direct MCP tools registered by extensions are regular registered tools and should be controlled with `tools` patterns such as `context7_*` or `github_*`.
 >
 > **Note:** Top-level shorthand is only supported for the canonical Pi built-ins (`bash`, `read`, `write`, `edit`, `grep`, `find`, `ls`) in agent frontmatter. Use `permission.tools.<name>` for `mcp`, `task`, and any third-party tool.
 
 ### `bash`
 
-Command patterns use `*` wildcards and match against the full command string. If multiple patterns match, the **last matching rule wins**.
+Command patterns use `*` wildcards and match against the full command string. If multiple patterns match, the **last declared matching rule wins**. Put broad fallback rules first and more specific overrides later.
 
 ```jsonc
 {
@@ -264,9 +377,10 @@ MCP permissions match against derived targets from tool input. These rules are m
 ```jsonc
 {
   "mcp": {
+    "*": "ask",
+    "myServer:*": "ask",
     "mcp_status": "allow",
     "mcp_list": "allow",
-    "myServer:*": "ask",
     "dangerousServer": "deny"
   }
 }
@@ -362,10 +476,10 @@ Reserved permission checks:
 {
   "defaultPolicy": { "tools": "ask", "bash": "deny", "mcp": "ask", "skills": "ask", "special": "ask" },
   "bash": {
+    "git *": "ask",
     "git status": "allow",
     "git diff": "allow",
-    "git log *": "allow",
-    "git *": "ask"
+    "git log *": "allow"
   }
 }
 ```
@@ -376,11 +490,11 @@ Reserved permission checks:
 {
   "defaultPolicy": { "tools": "ask", "bash": "ask", "mcp": "ask", "skills": "ask", "special": "ask" },
   "mcp": {
+    "*": "ask",
     "mcp_status": "allow",
     "mcp_list": "allow",
     "mcp_search": "allow",
-    "mcp_describe": "allow",
-    "*": "ask"
+    "mcp_describe": "allow"
   }
 }
 ```
@@ -441,26 +555,36 @@ Override logs directory: $PI_PERMISSION_SYSTEM_LOGS_DIR when set
 ### Architecture
 
 ```
-index.ts                    → Root Pi entrypoint shim
+index.ts                         → Root Pi entrypoint shim
 src/
-├── index.ts                → Extension bootstrap, permission checks, readable prompts, review logging, reload handling, and subagent forwarding
-├── extension-config.ts     → Extension-local config loading and default creation
-├── logging.ts              → File-only debug/review logging helpers
-├── permission-manager.ts   → Global/project policy loading, merging, and resolution with caching
-├── skill-prompt-sanitizer.ts → Skill prompt parsing, multi-block sanitization, and skill-read path matching
-├── bash-filter.ts          → Bash command wildcard pattern matching
-├── wildcard-matcher.ts     → Shared wildcard pattern compilation and matching
-├── common.ts               → Shared utilities (YAML parsing, type guards, etc.)
-├── tool-registry.ts        → Registered tool name resolution
-└── types.ts                → TypeScript type definitions
+├── index.ts                     → Extension bootstrap, permission checks, readable prompts, review logging, reload handling, and subagent forwarding
+├── before-agent-start-cache.ts  → Caches prompt/tool filtering state between before_agent_start runs
+├── bash-filter.ts               → Bash command wildcard pattern matching
+├── common.ts                    → Shared utilities (YAML parsing, type guards, etc.)
+├── config-modal.ts              → `/permission-system` modal registration and settings UI wiring
+├── extension-config.ts          → Extension-local config loading and default creation
+├── logging.ts                   → File-only debug/review logging helpers
+├── model-option-compatibility.ts → Guards unsupported provider/model options
+├── permission-dialog.ts         → Interactive permission approval UI helpers
+├── permission-forwarding.ts     → Subagent-to-parent permission forwarding utilities
+├── permission-manager.ts        → Global/project policy loading, merging, and resolution with caching
+├── skill-prompt-sanitizer.ts    → Skill prompt parsing, multi-block sanitization, and skill-read path matching
+├── status.ts                    → Status line integration for runtime yolo state
+├── system-prompt-sanitizer.ts   → Available-tools prompt filtering helpers
+├── tool-registry.ts             → Registered tool name resolution
+├── types.ts                     → TypeScript type definitions
+├── wildcard-matcher.ts          → Shared wildcard pattern compilation and matching
+├── yolo-mode.ts                 → Runtime yolo approval helpers
+├── yolo-mode-api.ts             → Shared global runtime API for yolo toggling
+└── zellij-modal.ts              → Reusable modal/settings UI components
 tests/
-├── permission-system.test.ts → Core permission, layering, forwarding, and policy tests
-├── config-modal.test.ts      → Config command and modal behavior tests
-└── test-harness.ts           → Shared lightweight test helpers
+├── permission-system.test.ts    → Core permission, layering, forwarding, and policy tests
+├── config-modal.test.ts         → Modal command behavior tests
+└── test-harness.ts              → Shared lightweight test helpers
 schemas/
-└── permissions.schema.json → JSON Schema for policy validation
+└── permissions.schema.json      → JSON Schema for policy validation
 config/
-└── config.example.json     → Starter global policy template
+└── config.example.json          → Starter global policy template
 ```
 
 #### Module Organization
