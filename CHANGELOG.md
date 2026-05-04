@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.4.8] - 2026-05-04
+
+### Added
+- Added runtime yolo-mode control through the `/permission-system` settings modal and `globalThis.__piPermissionSystem` for other extensions.
+- Added wildcard support for `permission.tools` so direct tools from any extension can be controlled without adapter-specific hardcoding.
+- Added `PI_PERMISSION_SYSTEM_POLICY_AGENT_DIR` so global policy and global agent override lookup can be pointed at a different agent root when needed.
+
+### Changed
+- Simplified `/permission-system` to only open the settings modal, removing the previous `show`, `path`, `reset`, `help`, and `yolo ...` subcommands.
+- Expanded the README with an OpenCode-to-Pi migration guide covering agent file placement, frontmatter structure, permission mapping, Pi-specific `tools` vs `mcp` behavior, and policy-root overrides.
+
+### Fixed
+- Removed artifact validation that forced local runtime `config.json` values to match release defaults.
+- Restored requested bash command text in permission review log entries while keeping prompts and generic tool payload previews redacted.
+- Clarified last-declared-match wildcard precedence in the README and fixed wildcard-order examples/recipes so documented `tools` and `mcp` examples now match runtime behavior (thanks to @Nateowami for issue #17 and @gotgenes for the rule-order diagnosis).
+- Replaced the removed `session_switch` lifecycle subscription with a single supported `session_start` refresh path so session changes rebuild runtime permission state without duplicate handlers (thanks to @gotgenes for PR #11).
+- Removed stale README wording around exact-name tool matching and refreshed the documented architecture/module list to match the current extension layout.
+
 ## [0.4.7] - 2026-05-04
 
 ### Added
