@@ -5,7 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.7] - 2026-05-04
+
+### Added
+- Documented `PI_PERMISSION_SYSTEM_CONFIG_PATH` and `PI_PERMISSION_SYSTEM_LOGS_DIR` overrides for custom config and log locations.
+- Added artifact validation to release checks for config defaults, schema support, README references, and package script safety.
+
+### Changed
+- Enforced trusted global/system `deny` floors so project-local policy layers can tighten permissions without relaxing higher-trust denies.
+- Switched permission review audit entries to metadata hashes and lengths for prompts, commands, denial reasons, and tool input previews instead of raw sensitive content.
+
+### Fixed
+- Stopped publishing `config.json` in the package so fresh installs use the runtime default with yolo mode off by default (thanks to @Nateowami for PR #18).
 
 ## [0.4.6] - 2026-04-28
 
