@@ -39,6 +39,12 @@ declare module "node:assert/strict" {
   export default assert;
 }
 
+declare module "node:crypto" {
+  export function createHash(algorithm: string): {
+    update(value: string): { digest(encoding: string): string };
+  };
+}
+
 declare module "node:fs" {
   export function appendFileSync(...args: any[]): void;
   export function existsSync(path: string): boolean;

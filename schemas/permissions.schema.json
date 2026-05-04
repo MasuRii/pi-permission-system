@@ -53,17 +53,6 @@
         },
         "external_directory": {
           "$ref": "#/$defs/permissionState"
-        },
-        "tool_call_limit": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/permissionState"
-            },
-            {
-              "type": "integer",
-              "minimum": 0
-            }
-          ]
         }
       }
     }

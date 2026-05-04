@@ -18,10 +18,12 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "npx --yes -p typescript@5.7.3 tsc -p tsconfig.json --noCheck",
-    "lint": "npm run build",
+    "typecheck": "npx --yes -p typescript@5.7.3 tsc -p tsconfig.json --noEmit",
+    "build": "npm run typecheck",
+    "lint": "npm run typecheck",
+    "validate:artifacts": "node ./scripts/validate-artifacts.mjs",
     "test": "bun ./tests/permission-system.test.ts && bun ./tests/config-modal.test.ts",
-    "check": "npm run lint && npm run test"
+    "check": "npm run lint && npm run validate:artifacts && npm run test"
   },
   "keywords": [
     "pi-package",
@@ -46,7 +48,8 @@
     "url": "https://github.com/MasuRii/pi-permission-system/issues"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20",
+    "bun": ">=1.1.0"
   },
   "publishConfig": {
     "access": "public"
@@ -57,9 +60,9 @@
     ]
   },
   "peerDependencies": {
-    "@mariozechner/pi-ai": "^0.70.5",
-    "@mariozechner/pi-coding-agent": "^0.70.5",
-    "@mariozechner/pi-tui": "^0.70.5",
+    "@mariozechner/pi-ai": "^0.72.0",
+    "@mariozechner/pi-coding-agent": "^0.72.0",
+    "@mariozechner/pi-tui": "^0.72.0",
     "@sinclair/typebox": "^0.34.49"
   }
 }

@@ -1,9 +1,9 @@
 import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, normalize, resolve, sep } from "node:path";
+import { join, normalize } from "node:path";
 
-import { getNonEmptyString, toRecord } from "./common.js";
+import { getNonEmptyString, isPathWithinDirectory, normalizePathForComparison, toRecord } from "./common.js";
 import {
   createActiveToolsCacheKey,
   createBeforeAgentStartPromptStateKey,
@@ -29,6 +29,7 @@ import {
   isForwardedPermissionRequestForSession,
   PERMISSION_FORWARDING_POLL_INTERVAL_MS,
   PERMISSION_FORWARDING_TIMEOUT_MS,
+  resolvePermissionForwardingRootDir,
   resolvePermissionForwardingTargetSessionId,
   SUBAGENT_ENV_HINT_KEYS,
   type ForwardedPermissionRequest,
@@ -49,9 +50,7 @@ import { canResolveAskPermissionRequest, shouldAutoApprovePermissionState } from
 import { registerModelOptionCompatibilityGuard } from "./model-option-compatibility.js";
 
 const PI_AGENT_DIR = getAgentDir();
-const SESSIONS_DIR = join(PI_AGENT_DIR, "sessions");
 const SUBAGENT_SESSIONS_DIR = join(PI_AGENT_DIR, "subagent-sessions");
-const PERMISSION_FORWARDING_DIR = join(SESSIONS_DIR, "permission-forwarding");
 
 const ACTIVE_AGENT_TAG_REGEX = /<active_agent\s+name=["']([^"']+)["'][^>]*>/i;
 
@@ -71,6 +70,12 @@ type PermissionRequestEvent = {
   target?: string;
   toolInputPreview?: string;
   agentName?: string | null;
+};
+
+type SensitiveLogMetadata = {
+  present: boolean;
+  length: number;
+  sha256: string;
 };
 
 const PERMISSION_REQUEST_EVENT_CHANNEL = "pi-permission-system:permission-request";
@@ -112,38 +117,6 @@ function writeReviewLog(event: string, details: Record<string, unknown> = {}): v
   if (warning) {
     reportLoggingWarning(warning);
   }
-}
-
-function normalizePathForComparison(pathValue: string, cwd: string): string {
-  const trimmed = pathValue.trim().replace(/^['"]|['"]$/g, "");
-  if (!trimmed) {
-    return "";
-  }
-
-  let normalizedPath = trimmed.startsWith("@") ? trimmed.slice(1) : trimmed;
-
-  if (normalizedPath === "~") {
-    normalizedPath = homedir();
-  } else if (normalizedPath.startsWith("~/") || normalizedPath.startsWith("~\\")) {
-    normalizedPath = join(homedir(), normalizedPath.slice(2));
-  }
-
-  const absolutePath = resolve(cwd, normalizedPath);
-  const normalizedAbsolutePath = normalize(absolutePath);
-  return process.platform === "win32" ? normalizedAbsolutePath.toLowerCase() : normalizedAbsolutePath;
-}
-
-function isPathWithinDirectory(pathValue: string, directory: string): boolean {
-  if (!pathValue || !directory) {
-    return false;
-  }
-
-  if (pathValue === directory) {
-    return true;
-  }
-
-  const prefix = directory.endsWith(sep) ? directory : `${directory}${sep}`;
-  return pathValue.startsWith(prefix);
 }
 
 function getPathBearingToolPath(toolName: string, input: unknown): string | null {
@@ -526,11 +499,26 @@ function getToolInputPreviewForLog(result: PermissionCheckResult, input: unknown
   return formatGenericToolInputForLog(input);
 }
 
-function getPermissionLogContext(result: PermissionCheckResult, input: unknown): { command?: string; target?: string; toolInputPreview?: string } {
+function createSensitiveLogMetadata(value: string | undefined): SensitiveLogMetadata | null {
+  if (value === undefined) {
+    return null;
+  }
+
   return {
-    command: result.command,
+    present: true,
+    length: value.length,
+    sha256: createHash("sha256").update(value).digest("hex"),
+  };
+}
+
+function getPermissionLogContext(
+  result: PermissionCheckResult,
+  input: unknown,
+): { commandMetadata: SensitiveLogMetadata | null; target?: string; toolInputPreviewMetadata: SensitiveLogMetadata | null } {
+  return {
+    commandMetadata: createSensitiveLogMetadata(result.command),
     target: result.target,
-    toolInputPreview: getToolInputPreviewForLog(result, input),
+    toolInputPreviewMetadata: createSensitiveLogMetadata(getToolInputPreviewForLog(result, input)),
   };
 }
 
@@ -622,14 +610,28 @@ function ensureDirectoryExists(path: string, description: string): boolean {
   }
 }
 
-function getPermissionForwardingLocationForSession(sessionId: string): PermissionForwardingLocation {
-  return createPermissionForwardingLocation(PERMISSION_FORWARDING_DIR, sessionId);
+function getPermissionForwardingRootDir(ctx: ExtensionContext): string {
+  return resolvePermissionForwardingRootDir({
+    defaultAgentDir: PI_AGENT_DIR,
+    isSubagent: isSubagentExecutionContext(ctx),
+    env: process.env,
+  });
 }
 
-function ensurePermissionForwardingLocation(sessionId: string): PermissionForwardingLocation | null {
+function getPermissionForwardingLocationForSession(
+  sessionId: string,
+  ctx: ExtensionContext,
+): PermissionForwardingLocation {
+  return createPermissionForwardingLocation(getPermissionForwardingRootDir(ctx), sessionId);
+}
+
+function ensurePermissionForwardingLocation(
+  sessionId: string,
+  ctx: ExtensionContext,
+): PermissionForwardingLocation | null {
   let location: PermissionForwardingLocation;
   try {
-    location = getPermissionForwardingLocationForSession(sessionId);
+    location = getPermissionForwardingLocationForSession(sessionId, ctx);
   } catch (error) {
     logPermissionForwardingError("Failed to resolve permission forwarding location", error);
     return null;
@@ -642,10 +644,13 @@ function ensurePermissionForwardingLocation(sessionId: string): PermissionForwar
   return sessionRootReady && requestsReady && responsesReady ? location : null;
 }
 
-function getExistingPermissionForwardingLocation(sessionId: string): PermissionForwardingLocation | null {
+function getExistingPermissionForwardingLocation(
+  sessionId: string,
+  ctx: ExtensionContext,
+): PermissionForwardingLocation | null {
   let location: PermissionForwardingLocation;
   try {
-    location = getPermissionForwardingLocationForSession(sessionId);
+    location = getPermissionForwardingLocationForSession(sessionId, ctx);
   } catch {
     return null;
   }
@@ -799,7 +804,7 @@ async function waitForForwardedPermissionApproval(
     return { approved: false, state: "denied" };
   }
 
-  const location = ensurePermissionForwardingLocation(targetSessionId);
+  const location = ensurePermissionForwardingLocation(targetSessionId, ctx);
   if (!location) {
     logPermissionForwardingError(
       `Permission forwarding is unavailable because session-scoped directories could not be prepared for '${targetSessionId}'`,
@@ -845,7 +850,7 @@ async function waitForForwardedPermissionApproval(
         requestId,
         approved: response?.approved ?? null,
         state: response?.state ?? null,
-        denialReason: response?.denialReason ?? null,
+        denialReasonMetadata: createSensitiveLogMetadata(response?.denialReason),
         responderSessionId: response?.responderSessionId ?? null,
         targetSessionId,
         responsePath,
@@ -877,7 +882,7 @@ async function processForwardedPermissionRequests(ctx: ExtensionContext): Promis
   }
 
   const currentSessionId = getSessionId(ctx);
-  const location = getExistingPermissionForwardingLocation(currentSessionId);
+  const location = getExistingPermissionForwardingLocation(currentSessionId, ctx);
   if (!location) {
     return;
   }
@@ -944,7 +949,7 @@ async function processForwardedPermissionRequests(ctx: ExtensionContext): Promis
       targetSessionId: request.targetSessionId,
       responsePath,
       resolution: decision.state,
-      denialReason: decision.denialReason ?? null,
+      denialReasonMetadata: createSensitiveLogMetadata(decision.denialReason),
     });
     try {
       writeJsonFileAtomic(responsePath, {
@@ -1120,9 +1125,9 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       toolName?: string;
       skillName?: string;
       path?: string;
-      command?: string;
+      commandMetadata?: SensitiveLogMetadata | null;
       target?: string;
-      toolInputPreview?: string;
+      toolInputPreviewMetadata?: SensitiveLogMetadata | null;
       resolution?: string;
       denialReason?: string;
     },
@@ -1131,16 +1136,16 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       requestId: details.requestId,
       source: details.source,
       agentName: details.agentName,
-      message: details.message,
+      promptMetadata: createSensitiveLogMetadata(details.message),
       toolCallId: details.toolCallId ?? null,
       toolName: details.toolName ?? null,
       skillName: details.skillName ?? null,
       path: details.path ?? null,
-      command: details.command ?? null,
+      commandMetadata: details.commandMetadata ?? null,
       target: details.target ?? null,
-      toolInputPreview: details.toolInputPreview ?? null,
+      toolInputPreviewMetadata: details.toolInputPreviewMetadata ?? null,
       resolution: details.resolution ?? null,
-      denialReason: details.denialReason ?? null,
+      denialReasonMetadata: createSensitiveLogMetadata(details.denialReason),
     });
   };
 
@@ -1155,9 +1160,9 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       toolName?: string;
       skillName?: string;
       path?: string;
-      command?: string;
+      commandMetadata?: SensitiveLogMetadata | null;
       target?: string;
-      toolInputPreview?: string;
+      toolInputPreviewMetadata?: SensitiveLogMetadata | null;
     },
   ): Promise<PermissionPromptDecision> => {
     if (shouldAutoApprovePermissionState("ask", extensionConfig)) {
@@ -1171,9 +1176,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         toolName: details.toolName,
         skillName: details.skillName,
         path: details.path,
-        command: details.command,
         target: details.target,
-        toolInputPreview: details.toolInputPreview,
         agentName: details.agentName,
       });
       return { approved: true, state: "approved" };
@@ -1189,9 +1192,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       toolName: details.toolName,
       skillName: details.skillName,
       path: details.path,
-      command: details.command,
       target: details.target,
-      toolInputPreview: details.toolInputPreview,
       agentName: details.agentName,
     });
 
@@ -1210,9 +1211,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       toolName: details.toolName,
       skillName: details.skillName,
       path: details.path,
-      command: details.command,
       target: details.target,
-      toolInputPreview: details.toolInputPreview,
       agentName: details.agentName,
     });
 
@@ -1406,7 +1405,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           source: "skill_input",
           skillName,
           agentName,
-          message,
+          promptMetadata: createSensitiveLogMetadata(message),
           resolution: "confirmation_unavailable",
         });
         return { action: "handled" };
@@ -1476,7 +1475,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
               skillName: matchedSkill.name,
               agentName,
               path: event.input.path,
-              message,
+              promptMetadata: createSensitiveLogMetadata(message),
               resolution: "confirmation_unavailable",
             });
             return {
@@ -1543,7 +1542,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
             toolName,
             agentName,
             path: externalDirectoryPath,
-            message,
+            promptMetadata: createSensitiveLogMetadata(message),
             resolution: "confirmation_unavailable",
           });
           return {
@@ -1605,7 +1604,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           toolCallId: event.toolCallId,
           toolName,
           agentName,
-          message,
+          promptMetadata: createSensitiveLogMetadata(message),
           ...permissionLogContext,
           resolution: "confirmation_unavailable",
         });

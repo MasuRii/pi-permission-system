@@ -1,6 +1,6 @@
-import { homedir } from "node:os";
-import { dirname, join, normalize, resolve, sep } from "node:path";
+import { dirname } from "node:path";
 
+import { isPathWithinDirectory, normalizePathForComparison } from "./common.js";
 import { PermissionManager } from "./permission-manager.js";
 import type { PermissionState } from "./types.js";
 
@@ -48,38 +48,6 @@ function encodeXml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
-}
-
-function normalizePathForComparison(pathValue: string, cwd: string): string {
-  const trimmed = pathValue.trim().replace(/^['"]|['"]$/g, "");
-  if (!trimmed) {
-    return "";
-  }
-
-  let normalizedPath = trimmed.startsWith("@") ? trimmed.slice(1) : trimmed;
-
-  if (normalizedPath === "~") {
-    normalizedPath = homedir();
-  } else if (normalizedPath.startsWith("~/") || normalizedPath.startsWith("~\\")) {
-    normalizedPath = join(homedir(), normalizedPath.slice(2));
-  }
-
-  const absolutePath = resolve(cwd, normalizedPath);
-  const normalizedAbsolutePath = normalize(absolutePath);
-  return process.platform === "win32" ? normalizedAbsolutePath.toLowerCase() : normalizedAbsolutePath;
-}
-
-function isPathWithinDirectory(pathValue: string, directory: string): boolean {
-  if (!pathValue || !directory) {
-    return false;
-  }
-
-  if (pathValue === directory) {
-    return true;
-  }
-
-  const prefix = directory.endsWith(sep) ? directory : `${directory}${sep}`;
-  return pathValue.startsWith(prefix);
 }
 
 function parseSkillEntries(sectionBody: string): ParsedSkillPromptEntry[] {

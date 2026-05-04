@@ -1,11 +1,10 @@
 import { appendFileSync } from "node:fs";
 
 import {
-  DEBUG_LOG_PATH,
   EXTENSION_ID,
-  LOGS_DIR,
-  PERMISSION_REVIEW_LOG_PATH,
   ensurePermissionSystemLogsDirectory,
+  getPermissionSystemDebugLogPath,
+  getPermissionSystemReviewLogPath,
   type PermissionSystemExtensionConfig,
 } from "./extension-config.js";
 
@@ -48,9 +47,9 @@ interface PermissionSystemLoggerOptions {
 }
 
 export function createPermissionSystemLogger(options: PermissionSystemLoggerOptions): PermissionSystemLogger {
-  const debugLogPath = options.debugLogPath ?? DEBUG_LOG_PATH;
-  const reviewLogPath = options.reviewLogPath ?? PERMISSION_REVIEW_LOG_PATH;
-  const ensureLogsDirectory = options.ensureLogsDirectory ?? (() => ensurePermissionSystemLogsDirectory(LOGS_DIR));
+  const getDebugLogPath = (): string => options.debugLogPath ?? getPermissionSystemDebugLogPath();
+  const getReviewLogPath = (): string => options.reviewLogPath ?? getPermissionSystemReviewLogPath();
+  const ensureLogsDirectory = options.ensureLogsDirectory ?? (() => ensurePermissionSystemLogsDirectory());
 
   const writeLine = (stream: "debug" | "review", path: string, event: string, details: Record<string, unknown>): string | undefined => {
     const directoryError = ensureLogsDirectory();
@@ -82,7 +81,7 @@ export function createPermissionSystemLogger(options: PermissionSystemLoggerOpti
       return undefined;
     }
 
-    return writeLine("debug", debugLogPath, event, details);
+    return writeLine("debug", getDebugLogPath(), event, details);
   };
 
   const review = (event: string, details: Record<string, unknown> = {}): string | undefined => {
@@ -90,7 +89,7 @@ export function createPermissionSystemLogger(options: PermissionSystemLoggerOpti
       return undefined;
     }
 
-    return writeLine("review", reviewLogPath, event, details);
+    return writeLine("review", getReviewLogPath(), event, details);
   };
 
   return { debug, review };

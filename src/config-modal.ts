@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import type { SettingItem } from "@mariozechner/pi-tui";
 
-import { DEFAULT_EXTENSION_CONFIG, type PermissionSystemExtensionConfig } from "./extension-config.js";
+import { cloneDefaultConfig, type PermissionSystemExtensionConfig } from "./extension-config.js";
 import { ZellijModal, ZellijSettingsModal } from "./zellij-modal.js";
 
 interface PermissionSystemConfigController {
@@ -38,14 +38,6 @@ const COMMAND_ARGUMENTS = [
   },
 ] as const;
 const USAGE_TEXT = "Usage: /permission-system [show|path|reset|help] (or run /permission-system with no args to open settings modal)";
-
-function cloneDefaultConfig(): PermissionSystemExtensionConfig {
-  return {
-    debugLog: DEFAULT_EXTENSION_CONFIG.debugLog,
-    permissionReviewLog: DEFAULT_EXTENSION_CONFIG.permissionReviewLog,
-    yoloMode: DEFAULT_EXTENSION_CONFIG.yoloMode,
-  };
-}
 
 function toOnOff(value: boolean): string {
   return value ? "on" : "off";

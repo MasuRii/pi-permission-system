@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -9,16 +9,29 @@ import {
   createBeforeAgentStartPromptStateKey,
   shouldApplyCachedAgentStartState,
 } from "../src/before-agent-start-cache.js";
-import { CONFIG_PATH, DEFAULT_EXTENSION_CONFIG, loadPermissionSystemConfig, savePermissionSystemConfig } from "../src/extension-config.js";
+import {
+  CONFIG_PATH_ENV_KEY,
+  DEFAULT_EXTENSION_CONFIG,
+  LOGS_DIR_ENV_KEY,
+  loadPermissionSystemConfig,
+  savePermissionSystemConfig,
+} from "../src/extension-config.js";
 import { createPermissionSystemLogger } from "../src/logging.js";
 import {
   createPermissionForwardingLocation,
   isForwardedPermissionRequestForSession,
+  PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY,
+  PI_AGENT_ROUTER_SHARED_AGENT_DIR_ENV_KEY,
+  resolvePermissionForwardingRootDir,
   resolvePermissionForwardingTargetSessionId,
   SUBAGENT_ENV_HINT_KEYS,
   SUBAGENT_PARENT_SESSION_ENV_KEY,
 } from "../src/permission-forwarding.js";
 import piPermissionSystemExtension from "../src/index.js";
+import {
+  getUnsupportedTemperatureReason,
+  stripUnsupportedTemperatureFromPayload,
+} from "../src/model-option-compatibility.js";
 import { PermissionManager } from "../src/permission-manager.js";
 import {
   parseAllSkillPromptSections,
@@ -77,6 +90,7 @@ type ExtensionHarness = {
   cwd: string;
   handlers: Record<string, MockHandler>;
   prompts: string[];
+  reviewLogPath: string;
   cleanup: () => Promise<void>;
 };
 
@@ -121,15 +135,21 @@ function createToolCallHarness(
   const cwd = options.cwd || baseDir;
   const prompts: string[] = [];
   const handlers: Record<string, MockHandler> = {};
+  const extensionConfigPath = join(baseDir, "extension-config.json");
+  const logsDir = join(baseDir, "extension-logs");
+  const reviewLogPath = join(logsDir, "pi-permission-system-permission-review.jsonl");
   const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
-  const originalExtensionConfig = existsSync(CONFIG_PATH) ? readFileSync(CONFIG_PATH, "utf8") : null;
+  const originalConfigPath = process.env[CONFIG_PATH_ENV_KEY];
+  const originalLogsDir = process.env[LOGS_DIR_ENV_KEY];
 
   mkdirSync(join(baseDir, "agents"), { recursive: true });
   mkdirSync(cwd, { recursive: true });
   writeFileSync(join(baseDir, "pi-permissions.jsonc"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
-  writeFileSync(CONFIG_PATH, `${JSON.stringify(DEFAULT_EXTENSION_CONFIG, null, 2)}\n`, "utf8");
+  writeFileSync(extensionConfigPath, `${JSON.stringify(DEFAULT_EXTENSION_CONFIG, null, 2)}\n`, "utf8");
 
   process.env.PI_CODING_AGENT_DIR = baseDir;
+  process.env[CONFIG_PATH_ENV_KEY] = extensionConfigPath;
+  process.env[LOGS_DIR_ENV_KEY] = logsDir;
   try {
     piPermissionSystemExtension({
       on: (name: string, handler: MockHandler): void => {
@@ -156,14 +176,18 @@ function createToolCallHarness(
     cwd,
     handlers,
     prompts,
+    reviewLogPath,
     cleanup: async (): Promise<void> => {
       await Promise.resolve(handlers.session_shutdown?.({}, createMockContext(cwd, prompts, options)));
-      if (originalExtensionConfig === null) {
-        if (existsSync(CONFIG_PATH)) {
-          unlinkSync(CONFIG_PATH);
-        }
+      if (originalConfigPath === undefined) {
+        delete process.env[CONFIG_PATH_ENV_KEY];
       } else {
-        writeFileSync(CONFIG_PATH, originalExtensionConfig, "utf8");
+        process.env[CONFIG_PATH_ENV_KEY] = originalConfigPath;
+      }
+      if (originalLogsDir === undefined) {
+        delete process.env[LOGS_DIR_ENV_KEY];
+      } else {
+        process.env[LOGS_DIR_ENV_KEY] = originalLogsDir;
       }
       rmSync(baseDir, { recursive: true, force: true });
     },
@@ -1189,6 +1213,49 @@ runTest("getToolPermission supports arbitrary extension tool names", () => {
   }
 });
 
+runTest("Model option compatibility detects unsupported temperature by api provider and model", () => {
+  const cases = [
+    {
+      model: { api: "openai-codex-responses", id: "gpt-5", provider: "openai", reasoning: false },
+      expected: "api 'openai-codex-responses' does not support temperature",
+    },
+    {
+      model: { api: "openai-responses", id: "gpt-5", provider: "openai-codex", reasoning: false },
+      expected: "provider 'openai-codex' does not support temperature",
+    },
+    {
+      model: { api: "openai-responses", id: "codex-mini-latest", provider: "openai", reasoning: false },
+      expected: "model 'codex-mini-latest' does not support temperature",
+    },
+    {
+      model: { api: "azure-openai-responses", id: "o4-mini", provider: "azure", reasoning: true },
+      expected: "reasoning model 'o4-mini' accepts only the provider default temperature",
+    },
+    {
+      model: { api: "openai-responses", id: "gpt-5", provider: "openai", reasoning: false },
+      expected: undefined,
+    },
+  ] as const;
+
+  for (const { model, expected } of cases) {
+    assert.equal(getUnsupportedTemperatureReason(model), expected);
+  }
+});
+
+runTest("Model option compatibility strips unsupported temperature payloads only when present", () => {
+  const payload = { messages: [], temperature: 0.2, model: "codex-mini" };
+  assert.deepEqual(stripUnsupportedTemperatureFromPayload(payload), {
+    messages: [],
+    model: "codex-mini",
+  });
+  assert.deepEqual(payload, { messages: [], temperature: 0.2, model: "codex-mini" });
+
+  const withoutTemperature = { messages: [], model: "gpt-5" };
+  assert.equal(stripUnsupportedTemperatureFromPayload(withoutTemperature), withoutTemperature);
+  assert.equal(stripUnsupportedTemperatureFromPayload(null), null);
+  assert.deepEqual(stripUnsupportedTemperatureFromPayload(["temperature", 0.2]), ["temperature", 0.2]);
+});
+
 runTest("Yolo mode bypasses delegated ask routing when no parent forwarding target is available", () => {
   const targetSessionId = resolvePermissionForwardingTargetSessionId({
     hasUI: false,
@@ -1234,6 +1301,53 @@ runTest("Permission forwarding does not guess a target session when subagent run
   });
 
   assert.equal(targetSessionId, null);
+});
+
+runTest("Permission forwarding root honors explicit shared runtime and default precedence", () => {
+  const cases = [
+    {
+      name: "explicit override",
+      options: {
+        defaultAgentDir: "/default-agent",
+        isSubagent: true,
+        env: {
+          [PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY]: "/explicit-agent",
+          [PI_AGENT_ROUTER_SHARED_AGENT_DIR_ENV_KEY]: "/shared-runtime",
+        },
+      },
+      expectedRoot: "/explicit-agent",
+    },
+    {
+      name: "shared runtime dir",
+      options: {
+        defaultAgentDir: "/default-agent",
+        isSubagent: true,
+        env: {
+          [PI_AGENT_ROUTER_SHARED_AGENT_DIR_ENV_KEY]: "/shared-runtime",
+        },
+      },
+      expectedRoot: "/shared-runtime",
+    },
+    {
+      name: "default fallback",
+      options: {
+        defaultAgentDir: "/default-agent",
+        isSubagent: false,
+        env: {
+          [PI_AGENT_ROUTER_SHARED_AGENT_DIR_ENV_KEY]: "/shared-runtime",
+        },
+      },
+      expectedRoot: "/default-agent",
+    },
+  ] as const;
+
+  for (const { name, options, expectedRoot } of cases) {
+    assert.equal(
+      resolvePermissionForwardingRootDir(options),
+      join(expectedRoot, "sessions", "permission-forwarding"),
+      name,
+    );
+  }
 });
 
 runTest("Permission forwarding uses session-scoped directories per interactive session", () => {
@@ -1316,7 +1430,7 @@ function createManagerWithProject(
   };
 }
 
-runTest("Project-level config overrides base bash patterns", () => {
+runTest("Project-level config cannot relax global bash deny floors", () => {
   const { manager, cleanup } = createManagerWithProject(
     {
       defaultPolicy: {
@@ -1341,9 +1455,9 @@ runTest("Project-level config overrides base bash patterns", () => {
   );
 
   try {
-    const allowed = manager.checkPermission("bash", { command: "rm -rf build" });
-    assert.equal(allowed.state, "allow");
-    assert.equal(allowed.matchedPattern, "rm -rf build");
+    const deniedBuild = manager.checkPermission("bash", { command: "rm -rf build" });
+    assert.equal(deniedBuild.state, "deny");
+    assert.equal(deniedBuild.matchedPattern, "rm -rf *");
 
     const denied = manager.checkPermission("bash", { command: "rm -rf node_modules" });
     assert.equal(denied.state, "deny");
@@ -1395,7 +1509,7 @@ permission:
   }
 });
 
-runTest("Project-agent config overrides system-agent tool rules", () => {
+runTest("Project-agent config cannot relax system-agent tool deny floors", () => {
   const { manager, cleanup } = createManagerWithProject(
     {
       defaultPolicy: {
@@ -1430,14 +1544,14 @@ permission:
 
   try {
     const result = manager.checkPermission("read", {}, "reviewer");
-    assert.equal(result.state, "allow");
+    assert.equal(result.state, "deny");
     assert.equal(result.source, "tool");
   } finally {
     cleanup();
   }
 });
 
-runTest("Full precedence chain base < project < system-agent < project-agent for defaultPolicy", () => {
+runTest("Full precedence chain preserves trusted system-agent overrides while global deny floors constrain project defaults", () => {
   const { manager, cleanup } = createManagerWithProject(
     {
       defaultPolicy: {
@@ -1481,7 +1595,7 @@ permission:
     assert.equal(reviewerResult.source, "default");
 
     const globalResult = manager.checkPermission("custom_extension_tool", {});
-    assert.equal(globalResult.state, "allow");
+    assert.equal(globalResult.state, "deny");
     assert.equal(globalResult.source, "default");
   } finally {
     cleanup();
@@ -1977,6 +2091,33 @@ await runAsyncTest("generic ask prompts include serialized tool input for inform
     assert.equal(harness.prompts.length, 1);
     assert.match(harness.prompts[0], /weather_lookup/);
     assert.match(harness.prompts[0], /\{"city":"Chicago","units":"metric"\}/);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("permission review logs redact raw prompts and tool input previews", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "ask", special: "ask" },
+    },
+    ["secret_lookup"],
+  );
+
+  try {
+    const result = await runToolCall(harness, {
+      toolName: "secret_lookup",
+      toolCallId: "redacted-tool-input",
+      input: { token: "super-secret-token", query: "customer record" },
+    });
+
+    assert.equal(result.block, true);
+    const reviewLog = readFileSync(harness.reviewLogPath, "utf8");
+    assert.match(reviewLog, /promptMetadata/);
+    assert.match(reviewLog, /toolInputPreviewMetadata/);
+    assert.equal(reviewLog.includes("super-secret-token"), false);
+    assert.equal(reviewLog.includes("customer record"), false);
+    assert.equal(reviewLog.includes("Current agent requested tool"), false);
   } finally {
     await harness.cleanup();
   }

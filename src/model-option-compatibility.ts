@@ -141,16 +141,19 @@ function ensureModelOptionGuardForApi(pi: ExtensionAPI, api: Api): boolean {
   }
 
   const providerName = `pi-permission-system-model-option-compatibility-${api.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`;
+  if (!pi.registerProvider) {
+    return false;
+  }
+
   pi.registerProvider(providerName, {
     api,
-    streamSimple: (model, context, options) => {
-      const typedModel = model as Model<Api>;
-      const delegate = baseStreams.get(typedModel.api);
+    streamSimple: (model: Model<Api>, context: LlmContext, options?: SimpleStreamOptions) => {
+      const delegate = baseStreams.get(model.api);
       if (!delegate) {
-        throw new Error(`No base stream provider available for api '${typedModel.api}'.`);
+        throw new Error(`No base stream provider available for api '${model.api}'.`);
       }
 
-      return delegate(typedModel, context, composeTemperatureSanitizer(options, typedModel));
+      return delegate(model, context, composeTemperatureSanitizer(options, model));
     },
   });
 

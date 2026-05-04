@@ -6,7 +6,10 @@ export const PERMISSION_FORWARDING_POLL_INTERVAL_MS = 250;
 export const PERMISSION_FORWARDING_TIMEOUT_MS = 10 * 60 * 1000;
 export const SUBAGENT_ENV_HINT_KEYS = ["PI_IS_SUBAGENT", "PI_SUBAGENT_SESSION_ID", "PI_AGENT_ROUTER_SUBAGENT"] as const;
 export const SUBAGENT_PARENT_SESSION_ENV_KEY = "PI_AGENT_ROUTER_PARENT_SESSION_ID";
+export const PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY = "PI_PERMISSION_SYSTEM_FORWARDING_AGENT_DIR";
+export const PI_AGENT_ROUTER_SHARED_AGENT_DIR_ENV_KEY = "PI_MULTI_AUTH_RUNTIME_DIR";
 
+const PERMISSION_FORWARDING_DIRECTORY_NAME = "permission-forwarding";
 const SESSION_FORWARDING_ROOT_DIRECTORY_NAME = "sessions";
 const SESSION_FORWARDING_REQUESTS_DIRECTORY_NAME = "requests";
 const SESSION_FORWARDING_RESPONSES_DIRECTORY_NAME = "responses";
@@ -51,6 +54,32 @@ export function normalizePermissionForwardingSessionId(value: unknown): string |
 
 function encodeSessionIdForPath(sessionId: string): string {
   return encodeURIComponent(sessionId);
+}
+
+function normalizePermissionForwardingAgentDir(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+export function resolvePermissionForwardingRootDir(options: {
+  defaultAgentDir: string;
+  isSubagent: boolean;
+  env?: NodeJS.ProcessEnv;
+}): string {
+  const env = options.env ?? process.env;
+  const explicitAgentDir = normalizePermissionForwardingAgentDir(
+    env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY],
+  );
+  const routerSharedAgentDir = options.isSubagent
+    ? normalizePermissionForwardingAgentDir(env[PI_AGENT_ROUTER_SHARED_AGENT_DIR_ENV_KEY])
+    : null;
+  const agentDir = explicitAgentDir ?? routerSharedAgentDir ?? options.defaultAgentDir;
+
+  return join(agentDir, SESSION_FORWARDING_ROOT_DIRECTORY_NAME, PERMISSION_FORWARDING_DIRECTORY_NAME);
 }
 
 export function createPermissionForwardingLocation(

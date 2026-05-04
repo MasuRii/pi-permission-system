@@ -43,6 +43,12 @@ const { registerPermissionSystemCommand } = await import("../src/config-modal.js
 
 type Notification = { message: string; level: "info" | "warning" | "error" };
 
+type RegisteredCommandDefinition = {
+  description: string;
+  getArgumentCompletions?: (argumentPrefix: string) => Array<{ value: string; label: string; description?: string }> | null;
+  handler: (args: string, ctx: CommandContextStub) => Promise<void>;
+};
+
 type CommandContextStub = {
   hasUI: boolean;
   ui: {
@@ -79,6 +85,11 @@ function lastNotification(notifications: Notification[]): Notification {
   return notifications[notifications.length - 1] as Notification;
 }
 
+function getRegisteredDefinition(definition: RegisteredCommandDefinition | null): RegisteredCommandDefinition {
+  assert.ok(definition !== null);
+  return definition;
+}
+
 runTest("permission-system command completions expose top-level config actions", () => {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-command-completions-"));
   const configPath = join(baseDir, "config.json");
@@ -93,33 +104,29 @@ runTest("permission-system command completions expose top-level config actions",
       getConfigPath: () => configPath,
     };
 
-    let definition: {
-      description: string;
-      getArgumentCompletions?: (argumentPrefix: string) => Array<{ value: string; label: string; description?: string }> | null;
-      handler: (args: string, ctx: CommandContextStub) => Promise<void>;
-    } | null = null;
+    let definition: RegisteredCommandDefinition | null = null;
 
     registerPermissionSystemCommand(
       {
-        registerCommand(_name: string, nextDefinition: typeof definition) {
+        registerCommand(_name: string, nextDefinition: RegisteredCommandDefinition) {
           definition = nextDefinition;
         },
       } as never,
       controller as never,
     );
 
-    assert.ok(definition !== null);
-    assert.ok(typeof definition?.getArgumentCompletions === "function");
+    const registeredDefinition = getRegisteredDefinition(definition);
+    assert.ok(typeof registeredDefinition.getArgumentCompletions === "function");
 
-    const topLevel = definition?.getArgumentCompletions?.("");
+    const topLevel = registeredDefinition.getArgumentCompletions("");
     assert.ok(Array.isArray(topLevel));
-    assert.ok(topLevel?.some((item) => item.value === "show"));
-    assert.ok(topLevel?.some((item) => item.value === "reset"));
+    assert.ok(topLevel.some((item) => item.value === "show"));
+    assert.ok(topLevel.some((item) => item.value === "reset"));
 
-    const filtered = definition?.getArgumentCompletions?.("pa");
+    const filtered = registeredDefinition.getArgumentCompletions("pa");
     assert.deepEqual(filtered?.map((item) => item.value), ["path"]);
-    assert.equal(definition?.getArgumentCompletions?.("path extra"), null);
-    assert.equal(definition?.getArgumentCompletions?.("zzz"), null);
+    assert.equal(registeredDefinition.getArgumentCompletions("path extra"), null);
+    assert.equal(registeredDefinition.getArgumentCompletions("zzz"), null);
   } finally {
     rmSync(baseDir, { recursive: true, force: true });
   }
@@ -151,15 +158,11 @@ await runAsyncTest("permission-system command handlers manage config summary, pe
     };
 
     let registeredName = "";
-    let definition: {
-      description: string;
-      getArgumentCompletions?: (argumentPrefix: string) => Array<{ value: string; label: string; description?: string }> | null;
-      handler: (args: string, ctx: CommandContextStub) => Promise<void>;
-    } | null = null;
+    let definition: RegisteredCommandDefinition | null = null;
 
     registerPermissionSystemCommand(
       {
-        registerCommand(name: string, nextDefinition: typeof definition) {
+        registerCommand(name: string, nextDefinition: RegisteredCommandDefinition) {
           registeredName = name;
           definition = nextDefinition;
         },
@@ -168,37 +171,37 @@ await runAsyncTest("permission-system command handlers manage config summary, pe
     );
 
     assert.equal(registeredName, "permission-system");
-    assert.ok(definition !== null);
-    assert.ok((definition?.description ?? "").includes("Configure pi-permission-system"));
+    const registeredDefinition = getRegisteredDefinition(definition);
+    assert.ok(registeredDefinition.description.includes("Configure pi-permission-system"));
 
     const infoCtx = createCommandContext(true);
-    await definition?.handler("show", infoCtx.ctx);
+    await registeredDefinition.handler("show", infoCtx.ctx);
     assert.ok(lastNotification(infoCtx.notifications).message.includes("yoloMode=on"));
     assert.ok(lastNotification(infoCtx.notifications).message.includes("debugLog=on"));
 
-    await definition?.handler("path", infoCtx.ctx);
+    await registeredDefinition.handler("path", infoCtx.ctx);
     assert.equal(lastNotification(infoCtx.notifications).message, `permission-system config: ${configPath}`);
 
-    await definition?.handler("help", infoCtx.ctx);
+    await registeredDefinition.handler("help", infoCtx.ctx);
     assert.ok(lastNotification(infoCtx.notifications).message.includes("Usage: /permission-system"));
 
-    await definition?.handler("reset", infoCtx.ctx);
+    await registeredDefinition.handler("reset", infoCtx.ctx);
     assert.deepEqual(config, DEFAULT_EXTENSION_CONFIG);
     assert.equal(lastNotification(infoCtx.notifications).message, "Permission system settings reset to defaults.");
 
     const persisted = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
     assert.deepEqual(persisted, DEFAULT_EXTENSION_CONFIG);
 
-    await definition?.handler("unknown", infoCtx.ctx);
+    await registeredDefinition.handler("unknown", infoCtx.ctx);
     assert.equal(lastNotification(infoCtx.notifications).level, "warning");
     assert.ok(lastNotification(infoCtx.notifications).message.includes("Usage: /permission-system"));
 
     const headlessCtx = createCommandContext(false);
-    await definition?.handler("", headlessCtx.ctx);
+    await registeredDefinition.handler("", headlessCtx.ctx);
     assert.equal(lastNotification(headlessCtx.notifications).message, "/permission-system requires interactive TUI mode.");
 
     const modalCtx = createCommandContext(true);
-    await definition?.handler("", modalCtx.ctx);
+    await registeredDefinition.handler("", modalCtx.ctx);
     assert.equal(modalCtx.getCustomCalls(), 1);
   } finally {
     rmSync(baseDir, { recursive: true, force: true });

@@ -38,8 +38,28 @@ export const CONFIG_PATH = join(EXTENSION_ROOT, "config.json");
 export const LOGS_DIR = join(EXTENSION_ROOT, "logs");
 export const DEBUG_LOG_PATH = join(LOGS_DIR, `${EXTENSION_ID}-debug.jsonl`);
 export const PERMISSION_REVIEW_LOG_PATH = join(LOGS_DIR, `${EXTENSION_ID}-permission-review.jsonl`);
+export const CONFIG_PATH_ENV_KEY = "PI_PERMISSION_SYSTEM_CONFIG_PATH";
+export const LOGS_DIR_ENV_KEY = "PI_PERMISSION_SYSTEM_LOGS_DIR";
 
-function cloneDefaultConfig(): PermissionSystemExtensionConfig {
+export function getPermissionSystemConfigPath(configPath?: string): string {
+  const overridePath = process.env[CONFIG_PATH_ENV_KEY]?.trim();
+  return configPath || overridePath || CONFIG_PATH;
+}
+
+export function getPermissionSystemLogsDir(logsDir?: string): string {
+  const overrideDir = process.env[LOGS_DIR_ENV_KEY]?.trim();
+  return logsDir || overrideDir || LOGS_DIR;
+}
+
+export function getPermissionSystemDebugLogPath(logsDir = getPermissionSystemLogsDir()): string {
+  return join(logsDir, `${EXTENSION_ID}-debug.jsonl`);
+}
+
+export function getPermissionSystemReviewLogPath(logsDir = getPermissionSystemLogsDir()): string {
+  return join(logsDir, `${EXTENSION_ID}-permission-review.jsonl`);
+}
+
+export function cloneDefaultConfig(): PermissionSystemExtensionConfig {
   return {
     debugLog: DEFAULT_EXTENSION_CONFIG.debugLog,
     permissionReviewLog: DEFAULT_EXTENSION_CONFIG.permissionReviewLog,
@@ -64,7 +84,7 @@ function ensureConfigDirectory(configPath: string): void {
   mkdirSync(dirname(configPath), { recursive: true });
 }
 
-export function ensurePermissionSystemConfig(configPath = CONFIG_PATH): { created: boolean; warning?: string } {
+export function ensurePermissionSystemConfig(configPath = getPermissionSystemConfigPath()): { created: boolean; warning?: string } {
   if (existsSync(configPath)) {
     return { created: false };
   }
@@ -82,7 +102,7 @@ export function ensurePermissionSystemConfig(configPath = CONFIG_PATH): { create
   }
 }
 
-export function loadPermissionSystemConfig(configPath = CONFIG_PATH): PermissionSystemConfigLoadResult {
+export function loadPermissionSystemConfig(configPath = getPermissionSystemConfigPath()): PermissionSystemConfigLoadResult {
   const ensureResult = ensurePermissionSystemConfig(configPath);
 
   try {
@@ -106,7 +126,7 @@ export function loadPermissionSystemConfig(configPath = CONFIG_PATH): Permission
 
 export function savePermissionSystemConfig(
   config: PermissionSystemExtensionConfig,
-  configPath = CONFIG_PATH,
+  configPath = getPermissionSystemConfigPath(),
 ): PermissionSystemConfigSaveResult {
   const normalized = normalizePermissionSystemConfig(config);
   const tmpPath = `${configPath}.tmp`;
@@ -133,11 +153,7 @@ export function savePermissionSystemConfig(
   }
 }
 
-export function getPermissionSystemConfigPath(configPath = CONFIG_PATH): string {
-  return configPath;
-}
-
-export function ensurePermissionSystemLogsDirectory(logsDir = LOGS_DIR): string | undefined {
+export function ensurePermissionSystemLogsDirectory(logsDir = getPermissionSystemLogsDir()): string | undefined {
   try {
     mkdirSync(logsDir, { recursive: true });
     return undefined;
