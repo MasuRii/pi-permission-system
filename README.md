@@ -246,7 +246,7 @@ The policy file is a JSON object with these sections:
 | `skills`        | Skill name pattern permissions                      |
 | `special`       | Reserved permission checks such as external directory access |
 
-> **Note:** Trailing commas are **not** supported. If parsing fails, the extension falls back to `ask` for all categories.
+> **Note:** JSONC comments and trailing commas are supported. If parsing still fails, the extension falls back to `ask` for all categories and shows a warning in the TUI when available.
 
 ### Global Per-Agent Overrides
 
@@ -637,7 +637,7 @@ npx --yes ajv-cli@5 validate \
 
 | Problem | Cause | Solution |
 |---------|-------|----------|
-| Config not applied (everything asks) | File not found or parse error | Verify the global Pi policy file (default: `~/.pi/agent/pi-permissions.jsonc`, respects `PI_CODING_AGENT_DIR`); check for trailing commas |
+| Config not applied (everything asks) | File not found or parse error | Verify the global Pi policy file (default: `~/.pi/agent/pi-permissions.jsonc`, respects `PI_CODING_AGENT_DIR`); check the TUI warning for the parse location/message |
 | Per-agent override not applied | Frontmatter parsing issue | Ensure `---` delimiters at file top; keep YAML simple; restart session |
 | Tool blocked as unregistered | Unknown tool name | Use a registered `mcp` tool for server tools: `{ "tool": "server:tool" }` |
 | `/skill:<name>` blocked | Deny policy or confirmation unavailable | Check merged `skills` policy (global/project/agent layers). Active agent context is optional in the main session; `ask` still requires UI or forwarded confirmation. |

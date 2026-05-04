@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Permission-system config parsing now accepts JSONC comments and trailing commas across both policy files and the extension config, and invalid config warnings are emitted once per session as a compact single-line message with explicit fallback behavior.
+
+### Fixed
+- Stopped repeating identical invalid-config warnings in the TUI when the same broken permission policy is re-evaluated during the same session or reload cycle (thanks to @jviel-beta for issue #20).
+
 ## [0.4.8] - 2026-05-04
 
 ### Added
