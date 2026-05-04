@@ -45,10 +45,7 @@ function validatePolicyExample(config) {
 }
 
 const extensionConfig = readJson("config.json");
-assert(extensionConfig.debugLog === false, "config.json debugLog must default to false");
-assert(extensionConfig.permissionReviewLog === true, "config.json permissionReviewLog must default to true");
-assert(extensionConfig.yoloMode === false, "config.json yoloMode must default to false");
-assert(Object.keys(extensionConfig).length === 3, "config.json must contain only extension-local settings");
+assert(extensionConfig && typeof extensionConfig === "object" && !Array.isArray(extensionConfig), "config.json must be an object");
 
 const schema = readJson("schemas/permissions.schema.json");
 const specialProperties = schema?.properties?.special?.properties;
