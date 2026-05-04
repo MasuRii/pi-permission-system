@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-05-05
+
 ### Changed
 - Permission-system config parsing now accepts JSONC comments and trailing commas across both policy files and the extension config, and invalid config warnings are emitted once per session as a compact single-line message with explicit fallback behavior.
 
