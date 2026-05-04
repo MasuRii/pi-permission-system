@@ -31,7 +31,7 @@
       }
     },
     "tools": {
-      "description": "Exact-name permissions for registered tools. Use this map for the canonical Pi built-ins and any extension-provided or third-party tools.",
+      "description": "Pattern-based permissions for registered tools. Use exact names or `*` wildcards for canonical Pi built-ins and any extension-provided or third-party tools.",
       "$ref": "#/$defs/permissionMap"
     },
     "bash": {

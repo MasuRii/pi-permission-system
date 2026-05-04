@@ -47,6 +47,13 @@ import { checkRequestedToolRegistration, getToolNameFromValue } from "./tool-reg
 import type { PermissionCheckResult } from "./types.js";
 import { PERMISSION_SYSTEM_STATUS_KEY, syncPermissionSystemStatus } from "./status.js";
 import { canResolveAskPermissionRequest, shouldAutoApprovePermissionState } from "./yolo-mode.js";
+import {
+  registerPiPermissionSystemRuntimeApi,
+  unregisterPiPermissionSystemRuntimeApi,
+  type PiPermissionSystemRuntimeApi,
+  type YoloModeControlOptions,
+  type YoloModeControlResult,
+} from "./yolo-mode-api.js";
 import { registerModelOptionCompatibilityGuard } from "./model-option-compatibility.js";
 
 const PI_AGENT_DIR = getAgentDir();
@@ -82,6 +89,7 @@ const PERMISSION_REQUEST_EVENT_CHANNEL = "pi-permission-system:permission-reques
 const PATH_BEARING_TOOLS = new Set(["read", "write", "edit", "find", "grep", "ls"]);
 
 let extensionConfig: PermissionSystemExtensionConfig = { ...DEFAULT_EXTENSION_CONFIG };
+let runtimeApi: PiPermissionSystemRuntimeApi | null = null;
 const extensionLogger = createPermissionSystemLogger({
   getConfig: () => extensionConfig,
 });
@@ -514,8 +522,14 @@ function createSensitiveLogMetadata(value: string | undefined): SensitiveLogMeta
 function getPermissionLogContext(
   result: PermissionCheckResult,
   input: unknown,
-): { commandMetadata: SensitiveLogMetadata | null; target?: string; toolInputPreviewMetadata: SensitiveLogMetadata | null } {
+): {
+  command?: string;
+  commandMetadata: SensitiveLogMetadata | null;
+  target?: string;
+  toolInputPreviewMetadata: SensitiveLogMetadata | null;
+} {
   return {
+    command: result.toolName === "bash" && result.command ? result.command : undefined,
     commandMetadata: createSensitiveLogMetadata(result.command),
     target: result.target,
     toolInputPreviewMetadata: createSensitiveLogMetadata(getToolInputPreviewForLog(result, input)),
@@ -1066,6 +1080,20 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     });
   };
 
+  const syncPermissionSystemStatusWhenPossible = (
+    config: PermissionSystemExtensionConfig,
+    ctx?: ExtensionCommandContext | ExtensionContext,
+  ): void => {
+    if (ctx) {
+      syncPermissionSystemStatus(ctx, config);
+      return;
+    }
+
+    if (runtimeContext?.hasUI) {
+      syncPermissionSystemStatus(runtimeContext, config);
+    }
+  };
+
   const saveExtensionConfig = (next: PermissionSystemExtensionConfig, ctx: ExtensionCommandContext): void => {
     const normalized = normalizePermissionSystemConfig(next);
     const saved = savePermissionSystemConfig(normalized);
@@ -1077,7 +1105,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
 
     setExtensionConfig(normalized);
-    syncPermissionSystemStatus(ctx, normalized);
+    syncPermissionSystemStatusWhenPossible(normalized, ctx);
     lastConfigWarning = null;
 
     writeDebugLog("config.saved", {
@@ -1087,8 +1115,62 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     });
   };
 
+  const setYoloModeFromRuntimeApi = (enabled: boolean, options: YoloModeControlOptions = {}): YoloModeControlResult => {
+    if (typeof enabled !== "boolean") {
+      return {
+        yoloMode: extensionConfig.yoloMode,
+        changed: false,
+        persisted: false,
+        error: "setYoloMode(enabled) requires a boolean value.",
+      };
+    }
+
+    const normalized = normalizePermissionSystemConfig({ ...extensionConfig, yoloMode: enabled });
+    const persisted = options.persist !== false;
+    const changed = extensionConfig.yoloMode !== normalized.yoloMode;
+
+    if (persisted) {
+      const saved = savePermissionSystemConfig(normalized);
+      if (!saved.success) {
+        const error = saved.error ?? "Failed to persist pi-permission-system config.";
+        writeDebugLog("yolo_mode.update_failed", {
+          error,
+          requestedYoloMode: normalized.yoloMode,
+          source: getNonEmptyString(options.source) ?? "runtime-api",
+        });
+        return {
+          yoloMode: extensionConfig.yoloMode,
+          changed: false,
+          persisted: false,
+          error,
+        };
+      }
+      lastConfigWarning = null;
+    }
+
+    setExtensionConfig(normalized);
+    syncPermissionSystemStatusWhenPossible(normalized);
+    writeDebugLog("yolo_mode.updated", {
+      changed,
+      persisted,
+      source: getNonEmptyString(options.source) ?? "runtime-api",
+      yoloMode: normalized.yoloMode,
+    });
+
+    return {
+      yoloMode: normalized.yoloMode,
+      changed,
+      persisted,
+    };
+  };
+
   setLoggingWarningReporter(notifyWarning);
   refreshExtensionConfig();
+  runtimeApi = registerPiPermissionSystemRuntimeApi({
+    getYoloMode: () => extensionConfig.yoloMode,
+    setYoloMode: setYoloModeFromRuntimeApi,
+    toggleYoloMode: (options?: YoloModeControlOptions) => setYoloModeFromRuntimeApi(!extensionConfig.yoloMode, options),
+  });
   registerModelOptionCompatibilityGuard(pi);
 
   registerPermissionSystemCommand(pi, {
@@ -1125,6 +1207,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       toolName?: string;
       skillName?: string;
       path?: string;
+      command?: string;
       commandMetadata?: SensitiveLogMetadata | null;
       target?: string;
       toolInputPreviewMetadata?: SensitiveLogMetadata | null;
@@ -1141,6 +1224,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       toolName: details.toolName ?? null,
       skillName: details.skillName ?? null,
       path: details.path ?? null,
+      command: details.command ?? null,
       commandMetadata: details.commandMetadata ?? null,
       target: details.target ?? null,
       toolInputPreviewMetadata: details.toolInputPreviewMetadata ?? null,
@@ -1160,6 +1244,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       toolName?: string;
       skillName?: string;
       path?: string;
+      command?: string;
       commandMetadata?: SensitiveLogMetadata | null;
       target?: string;
       toolInputPreviewMetadata?: SensitiveLogMetadata | null;
@@ -1176,6 +1261,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         toolName: details.toolName,
         skillName: details.skillName,
         path: details.path,
+        command: details.command,
         target: details.target,
         agentName: details.agentName,
       });
@@ -1192,6 +1278,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       toolName: details.toolName,
       skillName: details.skillName,
       path: details.path,
+      command: details.command,
       target: details.target,
       agentName: details.agentName,
     });
@@ -1211,6 +1298,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       toolName: details.toolName,
       skillName: details.skillName,
       path: details.path,
+      command: details.command,
       target: details.target,
       agentName: details.agentName,
     });
@@ -1276,13 +1364,17 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     return toolPermission !== "deny";
   };
 
-  pi.on("session_start", async (event, ctx) => {
+  const refreshSessionRuntimeState = (ctx: ExtensionContext): void => {
     runtimeContext = ctx;
     refreshExtensionConfig(ctx);
     permissionManager = createPermissionManagerForCwd(ctx.cwd);
     invalidateAgentStartCache();
     lastKnownActiveAgentName = getActiveAgentName(ctx);
     startForwardedPermissionPolling(ctx);
+  };
+
+  pi.on("session_start", async (event, ctx) => {
+    refreshSessionRuntimeState(ctx);
 
     if (event.reason === "reload") {
       writeDebugLog("lifecycle.reload", {
@@ -1291,15 +1383,6 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         cwd: ctx.cwd,
       });
     }
-  });
-
-  pi.on("session_switch", async (_event, ctx) => {
-    runtimeContext = ctx;
-    refreshExtensionConfig(ctx);
-    permissionManager = createPermissionManagerForCwd(ctx.cwd);
-    invalidateAgentStartCache();
-    lastKnownActiveAgentName = getActiveAgentName(ctx);
-    startForwardedPermissionPolling(ctx);
   });
 
   pi.on("resources_discover", async (event, _ctx) => {
@@ -1318,6 +1401,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async () => {
     runtimeContext?.ui.setStatus(PERMISSION_SYSTEM_STATUS_KEY, undefined);
     runtimeContext = null;
+    unregisterPiPermissionSystemRuntimeApi(runtimeApi ?? undefined);
+    runtimeApi = null;
     invalidateAgentStartCache();
     stopForwardedPermissionPolling();
   });

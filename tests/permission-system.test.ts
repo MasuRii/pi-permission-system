@@ -85,10 +85,21 @@ type MockHandler = (
   ctx: Record<string, unknown>,
 ) => Promise<Record<string, unknown> | void> | Record<string, unknown> | void;
 
+type PermissionSystemRuntimeApi = {
+  getYoloMode(): boolean;
+  setYoloMode(enabled: boolean, options?: { persist?: boolean; source?: string }): { yoloMode: boolean; changed: boolean; persisted: boolean; error?: string };
+  toggleYoloMode(options?: { persist?: boolean; source?: string }): { yoloMode: boolean; changed: boolean; persisted: boolean; error?: string };
+};
+
+type GlobalWithPermissionSystem = typeof globalThis & {
+  __piPermissionSystem?: PermissionSystemRuntimeApi;
+};
+
 type ExtensionHarness = {
   baseDir: string;
   cwd: string;
   handlers: Record<string, MockHandler>;
+  registeredEvents: string[];
   prompts: string[];
   reviewLogPath: string;
   cleanup: () => Promise<void>;
@@ -99,6 +110,7 @@ type ExtensionHarnessOptions = {
   hasUI?: boolean;
   selectResponse?: string;
   inputResponse?: string;
+  statusUpdates?: Array<{ key: string; value: string | undefined }>;
 };
 
 const INHERITED_SUBAGENT_ENV_KEYS = [
@@ -135,6 +147,7 @@ function createToolCallHarness(
   const cwd = options.cwd || baseDir;
   const prompts: string[] = [];
   const handlers: Record<string, MockHandler> = {};
+  const registeredEvents: string[] = [];
   const extensionConfigPath = join(baseDir, "extension-config.json");
   const logsDir = join(baseDir, "extension-logs");
   const reviewLogPath = join(logsDir, "pi-permission-system-permission-review.jsonl");
@@ -153,6 +166,7 @@ function createToolCallHarness(
   try {
     piPermissionSystemExtension({
       on: (name: string, handler: MockHandler): void => {
+        registeredEvents.push(name);
         handlers[name] = handler;
       },
       registerCommand: (): void => {},
@@ -175,6 +189,7 @@ function createToolCallHarness(
     baseDir,
     cwd,
     handlers,
+    registeredEvents,
     prompts,
     reviewLogPath,
     cleanup: async (): Promise<void> => {
@@ -209,7 +224,9 @@ function createMockContext(
     },
     ui: {
       notify: (): void => {},
-      setStatus: (): void => {},
+      setStatus: (key: string, value: string | undefined): void => {
+        options.statusUpdates?.push({ key, value });
+      },
       select: async (title: string): Promise<string | undefined> => {
         prompts.push(title);
         return options.selectResponse ?? "Yes";
@@ -232,6 +249,53 @@ async function runToolCall(
   ));
   return (result ?? {}) as Record<string, unknown>;
 }
+
+await runAsyncTest("Extension registers only one supported session_start lifecycle handler", async () => {
+  const harness = createToolCallHarness({ defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "allow" } }, []);
+
+  try {
+    assert.equal(harness.registeredEvents.includes("session_switch"), false);
+    assert.equal(harness.registeredEvents.filter((eventName) => eventName === "session_start").length, 1);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("Extension exposes a runtime YOLO API for other extensions", async () => {
+  const statusUpdates: Array<{ key: string; value: string | undefined }> = [];
+  const harness = createToolCallHarness(
+    { defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "allow" } },
+    [],
+    { hasUI: true, statusUpdates },
+  );
+
+  try {
+    const globalScope = globalThis as GlobalWithPermissionSystem;
+    const api = globalScope.__piPermissionSystem;
+    assert.ok(api);
+    assert.equal(api.getYoloMode(), false);
+
+    await Promise.resolve(harness.handlers.session_start?.({ reason: "startup" }, createMockContext(harness.cwd, harness.prompts, { hasUI: true, statusUpdates })));
+
+    const transient = api.toggleYoloMode({ persist: false, source: "test-extension" });
+    assert.deepEqual(transient, { yoloMode: true, changed: true, persisted: false });
+    assert.equal(loadPermissionSystemConfig().config.yoloMode, false);
+    const enabledStatus = statusUpdates.at(-1);
+    assert.equal(enabledStatus?.key, "pi-permission-system");
+    assert.equal(enabledStatus?.value, "yolo");
+
+    const persisted = api.setYoloMode(false, { source: "test-extension" });
+    assert.deepEqual(persisted, { yoloMode: false, changed: true, persisted: true });
+    assert.equal(loadPermissionSystemConfig().config.yoloMode, false);
+    const disabledStatus = statusUpdates.at(-1);
+    assert.equal(disabledStatus?.key, "pi-permission-system");
+    assert.equal(disabledStatus?.value, undefined);
+  } finally {
+    await harness.cleanup();
+  }
+
+  assert.equal((globalThis as GlobalWithPermissionSystem).__piPermissionSystem, undefined);
+});
 
 runTest("Permission-system extension config defaults debug off, review log on, and yolo mode off", () => {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-config-"));
@@ -724,6 +788,63 @@ runTest("Arbitrary extension tools use exact-name tool permissions instead of MC
     const fallback = manager.checkPermission("another_extension_tool", {});
     assert.equal(fallback.state, "deny");
     assert.equal(fallback.source, "default");
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("Tool permissions support wildcard patterns for extension tools", () => {
+  const { manager, cleanup } = createManager({
+    defaultPolicy: {
+      tools: "deny",
+      bash: "ask",
+      mcp: "ask",
+      skills: "ask",
+      special: "ask",
+    },
+    tools: {
+      "*": "ask",
+      "context7_*": "allow",
+    },
+  });
+
+  try {
+    const context7 = manager.checkPermission("context7_query-docs", {});
+    assert.equal(context7.state, "allow");
+    assert.equal(context7.source, "tool");
+    assert.equal(context7.matchedPattern, "context7_*");
+    assert.equal(manager.getToolPermission("context7_query-docs"), "allow");
+
+    const unknown = manager.checkPermission("unknown_extension_tool", {});
+    assert.equal(unknown.state, "ask");
+    assert.equal(unknown.source, "tool");
+    assert.equal(unknown.matchedPattern, "*");
+    assert.equal(manager.getToolPermission("unknown_extension_tool"), "ask");
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("Tool permission wildcards use last matching rule wins", () => {
+  const { manager, cleanup } = createManager({
+    defaultPolicy: {
+      tools: "deny",
+      bash: "ask",
+      mcp: "ask",
+      skills: "ask",
+      special: "ask",
+    },
+    tools: {
+      "context7_*": "allow",
+      "*": "ask",
+    },
+  });
+
+  try {
+    const context7 = manager.checkPermission("context7_query-docs", {});
+    assert.equal(context7.state, "ask");
+    assert.equal(context7.source, "tool");
+    assert.equal(context7.matchedPattern, "*");
   } finally {
     cleanup();
   }
@@ -2091,6 +2212,29 @@ await runAsyncTest("generic ask prompts include serialized tool input for inform
     assert.equal(harness.prompts.length, 1);
     assert.match(harness.prompts[0], /weather_lookup/);
     assert.match(harness.prompts[0], /\{"city":"Chicago","units":"metric"\}/);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("permission review logs include requested bash commands", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "ask", special: "ask" },
+    },
+    ["bash"],
+  );
+
+  try {
+    const result = await runToolCall(harness, {
+      toolName: "bash",
+      toolCallId: "review-bash-command",
+      input: { command: "git status --short" },
+    });
+
+    assert.equal(result.block, true);
+    const reviewLog = readFileSync(harness.reviewLogPath, "utf8");
+    assert.match(reviewLog, /\"command\":\"git status --short\"/);
   } finally {
     await harness.cleanup();
   }

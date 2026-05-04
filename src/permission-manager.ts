@@ -1,6 +1,6 @@
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import { readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { extractFrontmatter, getNonEmptyString, isPermissionState, parseSimpleYamlMap, toRecord } from "./common.js";
 import type {
@@ -17,10 +17,17 @@ import {
   type CompiledWildcardPattern,
 } from "./wildcard-matcher.js";
 
-function defaultGlobalConfigPath(): string { return join(getAgentDir(), "pi-permissions.jsonc"); }
-function defaultAgentsDir(): string { return join(getAgentDir(), "agents"); }
-function defaultLegacyGlobalSettingsPath(): string { return join(getAgentDir(), "settings.json"); }
-function defaultGlobalMcpConfigPath(): string { return join(getAgentDir(), "mcp.json"); }
+const PERMISSION_POLICY_AGENT_DIR_ENV_KEY = "PI_PERMISSION_SYSTEM_POLICY_AGENT_DIR";
+
+function defaultPolicyAgentDir(): string {
+  const override = process.env[PERMISSION_POLICY_AGENT_DIR_ENV_KEY]?.trim();
+  return override ? resolve(override) : getAgentDir();
+}
+
+function defaultGlobalConfigPath(): string { return join(defaultPolicyAgentDir(), "pi-permissions.jsonc"); }
+function defaultAgentsDir(): string { return join(defaultPolicyAgentDir(), "agents"); }
+function defaultLegacyGlobalSettingsPath(): string { return join(defaultPolicyAgentDir(), "settings.json"); }
+function defaultGlobalMcpConfigPath(): string { return join(defaultPolicyAgentDir(), "mcp.json"); }
 
 const BUILT_IN_TOOL_PERMISSION_NAMES = new Set(["bash", "read", "write", "edit", "grep", "find", "ls"]);
 const SPECIAL_PERMISSION_KEYS = new Set(["doom_loop", "external_directory"]);
@@ -384,6 +391,7 @@ type ResolvedPermissions = {
   agentConfig: AgentPermissions;
   merged: GlobalPermissionConfig;
   layers: readonly PermissionLayer[];
+  compiledTools: CompiledPermissionPatterns;
   compiledSpecial: CompiledPermissionPatterns;
   compiledSkills: CompiledPermissionPatterns;
   compiledMcp: CompiledPermissionPatterns;
@@ -754,6 +762,7 @@ export class PermissionManager {
       agentConfig,
       merged,
       layers,
+      compiledTools: compilePermissionPatternsFromLayers("tools", layers),
       compiledSpecial: compilePermissionPatternsFromLayers("special", layers),
       compiledSkills: compilePermissionPatternsFromLayers("skills", layers),
       compiledMcp: compilePermissionPatternsFromLayers("mcp", layers),
@@ -798,7 +807,7 @@ export class PermissionManager {
    * @returns The permission state for the tool at the tool level
    */
   getToolPermission(toolName: string, agentName?: string): PermissionState {
-    const { layers } = this.resolvePermissions(agentName);
+    const { layers, compiledTools } = this.resolvePermissions(agentName);
     const normalizedToolName = toolName.trim();
 
     if (SPECIAL_PERMISSION_KEYS.has(normalizedToolName)) {
@@ -809,26 +818,29 @@ export class PermissionManager {
       return resolveLayeredDefaultPermission(layers, "skills")?.state ?? DEFAULT_POLICY.skills;
     }
 
+    const toolMatch = findCompiledPermissionMatch(compiledTools, normalizedToolName);
+
     if (normalizedToolName === "bash") {
-      return resolveLayeredRecordPermission(layers, "tools", "bash")?.state
+      return toolMatch?.state
         ?? resolveLayeredDefaultPermission(layers, "bash")?.state
         ?? DEFAULT_POLICY.bash;
     }
 
     if (normalizedToolName === "mcp") {
-      return resolveLayeredRecordPermission(layers, "tools", "mcp")?.state
+      return toolMatch?.state
         ?? resolveLayeredDefaultPermission(layers, "mcp")?.state
         ?? DEFAULT_POLICY.mcp;
     }
 
-    return resolveLayeredRecordPermission(layers, "tools", normalizedToolName)?.state
+    return toolMatch?.state
       ?? resolveLayeredDefaultPermission(layers, "tools")?.state
       ?? DEFAULT_POLICY.tools;
   }
 
   checkPermission(toolName: string, input: unknown, agentName?: string): PermissionCheckResult {
-    const { merged, layers, compiledSpecial, compiledSkills, compiledMcp, compiledBash } = this.resolvePermissions(agentName);
+    const { merged, layers, compiledTools, compiledSpecial, compiledSkills, compiledMcp, compiledBash } = this.resolvePermissions(agentName);
     const normalizedToolName = toolName.trim();
+    const toolMatch = findCompiledPermissionMatch(compiledTools, normalizedToolName);
 
     if (SPECIAL_PERMISSION_KEYS.has(normalizedToolName)) {
       const result = findCompiledPermissionMatch(compiledSpecial, normalizedToolName);
@@ -867,7 +879,7 @@ export class PermissionManager {
       return {
         toolName,
         state: result?.state
-          ?? resolveLayeredRecordPermission(layers, "tools", "bash")?.state
+          ?? toolMatch?.state
           ?? resolveLayeredDefaultPermission(layers, "bash")?.state
           ?? DEFAULT_POLICY.bash,
         command,
@@ -879,7 +891,6 @@ export class PermissionManager {
     if (normalizedToolName === "mcp") {
       const mcpTargets = [...createMcpPermissionTargets(input, this.getConfiguredMcpServerNames()), "mcp"];
       const fallbackTarget = mcpTargets[0] || "mcp";
-      const toolLevelMcpState = resolveLayeredRecordPermission(layers, "tools", "mcp")?.state;
       const defaultMcpState = resolveLayeredDefaultPermission(layers, "mcp")?.state ?? DEFAULT_POLICY.mcp;
 
       const mcpMatch = findCompiledPermissionMatchForNames(compiledMcp, mcpTargets);
@@ -893,10 +904,11 @@ export class PermissionManager {
         };
       }
 
-      if (toolLevelMcpState) {
+      if (toolMatch) {
         return {
           toolName,
-          state: toolLevelMcpState,
+          state: toolMatch.state,
+          matchedPattern: toolMatch.matchedPattern,
           target: fallbackTarget,
           source: "tool",
         };
@@ -923,21 +935,22 @@ export class PermissionManager {
       };
     }
 
-    const explicitToolPermission = resolveLayeredRecordPermission(layers, "tools", normalizedToolName);
     if (BUILT_IN_TOOL_PERMISSION_NAMES.has(normalizedToolName)) {
       return {
         toolName,
-        state: explicitToolPermission?.state
+        state: toolMatch?.state
           ?? resolveLayeredDefaultPermission(layers, "tools")?.state
           ?? DEFAULT_POLICY.tools,
+        matchedPattern: toolMatch?.matchedPattern,
         source: "tool",
       };
     }
 
-    if (explicitToolPermission) {
+    if (toolMatch) {
       return {
         toolName,
-        state: explicitToolPermission.state,
+        state: toolMatch.state,
+        matchedPattern: toolMatch.matchedPattern,
         source: "tool",
       };
     }

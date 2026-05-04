@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import type { SettingItem } from "@mariozechner/pi-tui";
 
-import { cloneDefaultConfig, type PermissionSystemExtensionConfig } from "./extension-config.js";
+import type { PermissionSystemExtensionConfig } from "./extension-config.js";
 import { ZellijModal, ZellijSettingsModal } from "./zellij-modal.js";
 
 interface PermissionSystemConfigController {
@@ -15,40 +15,9 @@ interface SettingValueSyncTarget {
 }
 
 const ON_OFF = ["on", "off"];
-const COMMAND_ARGUMENTS = [
-  {
-    value: "show",
-    label: "Show active settings",
-    description: "Display the current permission-system config summary",
-  },
-  {
-    value: "path",
-    label: "Show config path",
-    description: "Display the config.json path used by pi-permission-system",
-  },
-  {
-    value: "reset",
-    label: "Reset defaults",
-    description: "Restore default yolo/logging settings and persist them",
-  },
-  {
-    value: "help",
-    label: "Show help",
-    description: "Display command usage",
-  },
-] as const;
-const USAGE_TEXT = "Usage: /permission-system [show|path|reset|help] (or run /permission-system with no args to open settings modal)";
 
 function toOnOff(value: boolean): string {
   return value ? "on" : "off";
-}
-
-function summarizeConfig(config: PermissionSystemExtensionConfig): string {
-  return [
-    `yoloMode=${toOnOff(config.yoloMode)}`,
-    `permissionReviewLog=${toOnOff(config.permissionReviewLog)}`,
-    `debugLog=${toOnOff(config.debugLog)}`,
-  ].join(", ");
 }
 
 function buildSettingItems(config: PermissionSystemExtensionConfig): SettingItem[] {
@@ -100,16 +69,6 @@ function syncSettingValues(settingsList: SettingValueSyncTarget, config: Permiss
   settingsList.updateValue("debugLog", toOnOff(config.debugLog));
 }
 
-function getArgumentCompletions(argumentPrefix: string): Array<{ value: string; label: string; description: string }> | null {
-  const normalized = argumentPrefix.trim().toLowerCase();
-  if (normalized.includes(" ")) {
-    return null;
-  }
-
-  const filtered = COMMAND_ARGUMENTS.filter((item) => item.value.startsWith(normalized));
-  return filtered.length > 0 ? [...filtered] : null;
-}
-
 async function openSettingsModal(ctx: ExtensionCommandContext, controller: PermissionSystemConfigController): Promise<void> {
   const overlayOptions = { anchor: "center" as const, width: 82, maxHeight: "85%" as const, margin: 1 };
 
@@ -132,7 +91,7 @@ async function openSettingsModal(ctx: ExtensionCommandContext, controller: Permi
             }
           },
           onClose: () => done(),
-          helpText: `/permission-system show • /permission-system reset • ${controller.getConfigPath()}`,
+          helpText: `Config file: ${controller.getConfigPath()}`,
           enableSearch: true,
         },
         theme,
@@ -172,46 +131,10 @@ async function openSettingsModal(ctx: ExtensionCommandContext, controller: Permi
   );
 }
 
-function handleArgs(args: string, ctx: ExtensionCommandContext, controller: PermissionSystemConfigController): boolean {
-  const normalized = args.trim().toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-
-  if (normalized === "show") {
-    ctx.ui.notify(`permission-system: ${summarizeConfig(controller.getConfig())}`, "info");
-    return true;
-  }
-
-  if (normalized === "path") {
-    ctx.ui.notify(`permission-system config: ${controller.getConfigPath()}`, "info");
-    return true;
-  }
-
-  if (normalized === "reset") {
-    controller.setConfig(cloneDefaultConfig(), ctx);
-    ctx.ui.notify("Permission system settings reset to defaults.", "info");
-    return true;
-  }
-
-  if (normalized === "help") {
-    ctx.ui.notify(USAGE_TEXT, "info");
-    return true;
-  }
-
-  ctx.ui.notify(USAGE_TEXT, "warning");
-  return true;
-}
-
 export function registerPermissionSystemCommand(pi: ExtensionAPI, controller: PermissionSystemConfigController): void {
   pi.registerCommand("permission-system", {
     description: "Configure pi-permission-system logging and yolo-mode behavior",
-    getArgumentCompletions,
-    handler: async (args, ctx) => {
-      if (handleArgs(args, ctx, controller)) {
-        return;
-      }
-
+    handler: async (_args, ctx) => {
       if (!ctx.hasUI) {
         ctx.ui.notify("/permission-system requires interactive TUI mode.", "warning");
         return;

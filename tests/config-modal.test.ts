@@ -1,15 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { mock } from "bun:test";
 
-import {
-  DEFAULT_EXTENSION_CONFIG,
-  loadPermissionSystemConfig,
-  savePermissionSystemConfig,
-  type PermissionSystemExtensionConfig,
-} from "../src/extension-config.js";
+import type { PermissionSystemExtensionConfig } from "../src/extension-config.js";
 import { runAsyncTest, runTest } from "./test-harness.js";
 
 mock.module("@mariozechner/pi-coding-agent", () => ({
@@ -90,122 +82,68 @@ function getRegisteredDefinition(definition: RegisteredCommandDefinition | null)
   return definition;
 }
 
-runTest("permission-system command completions expose top-level config actions", () => {
-  const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-command-completions-"));
-  const configPath = join(baseDir, "config.json");
-  let config: PermissionSystemExtensionConfig = { ...DEFAULT_EXTENSION_CONFIG };
+function registerForTest(config: PermissionSystemExtensionConfig): RegisteredCommandDefinition {
+  let definition: RegisteredCommandDefinition | null = null;
 
-  try {
-    const controller = {
+  registerPermissionSystemCommand(
+    {
+      registerCommand(_name: string, nextDefinition: RegisteredCommandDefinition) {
+        definition = nextDefinition;
+      },
+    } as never,
+    {
       getConfig: () => config,
       setConfig: (next: PermissionSystemExtensionConfig) => {
         config = next;
       },
-      getConfigPath: () => configPath,
-    };
+      getConfigPath: () => "C:/tmp/pi-permission-system/config.json",
+    } as never,
+  );
 
-    let definition: RegisteredCommandDefinition | null = null;
+  return getRegisteredDefinition(definition);
+}
 
-    registerPermissionSystemCommand(
-      {
-        registerCommand(_name: string, nextDefinition: RegisteredCommandDefinition) {
-          definition = nextDefinition;
-        },
-      } as never,
-      controller as never,
-    );
+runTest("permission-system command exposes no subcommand completions", () => {
+  const registeredDefinition = registerForTest({
+    debugLog: false,
+    permissionReviewLog: true,
+    yoloMode: false,
+  });
 
-    const registeredDefinition = getRegisteredDefinition(definition);
-    assert.ok(typeof registeredDefinition.getArgumentCompletions === "function");
-
-    const topLevel = registeredDefinition.getArgumentCompletions("");
-    assert.ok(Array.isArray(topLevel));
-    assert.ok(topLevel.some((item) => item.value === "show"));
-    assert.ok(topLevel.some((item) => item.value === "reset"));
-
-    const filtered = registeredDefinition.getArgumentCompletions("pa");
-    assert.deepEqual(filtered?.map((item) => item.value), ["path"]);
-    assert.equal(registeredDefinition.getArgumentCompletions("path extra"), null);
-    assert.equal(registeredDefinition.getArgumentCompletions("zzz"), null);
-  } finally {
-    rmSync(baseDir, { recursive: true, force: true });
-  }
+  assert.equal(registeredDefinition.getArgumentCompletions, undefined);
 });
 
-await runAsyncTest("permission-system command handlers manage config summary, persistence, and modal routing", async () => {
-  const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-command-"));
-  const configPath = join(baseDir, "config.json");
-  let config: PermissionSystemExtensionConfig = {
+await runAsyncTest("permission-system command only opens the settings modal", async () => {
+  const config: PermissionSystemExtensionConfig = {
     debugLog: true,
     permissionReviewLog: false,
     yoloMode: true,
   };
+  const registeredDefinition = registerForTest(config);
 
-  try {
-    const initialSave = savePermissionSystemConfig(config, configPath);
-    assert.equal(initialSave.success, true);
+  assert.ok(registeredDefinition.description.includes("Configure pi-permission-system"));
 
-    const controller = {
-      getConfig: () => config,
-      setConfig: (next: PermissionSystemExtensionConfig) => {
-        const normalized = loadPermissionSystemConfig(configPath).config;
-        const saved = savePermissionSystemConfig(next, configPath);
-        assert.equal(saved.success, true);
-        config = loadPermissionSystemConfig(configPath).config;
-        assert.notDeepEqual(config, normalized);
-      },
-      getConfigPath: () => configPath,
-    };
+  const headlessCtx = createCommandContext(false);
+  await registeredDefinition.handler("", headlessCtx.ctx);
+  assert.equal(lastNotification(headlessCtx.notifications).message, "/permission-system requires interactive TUI mode.");
+  assert.equal(headlessCtx.getCustomCalls(), 0);
 
-    let registeredName = "";
-    let definition: RegisteredCommandDefinition | null = null;
+  const modalCtx = createCommandContext(true);
+  await registeredDefinition.handler("", modalCtx.ctx);
+  assert.equal(modalCtx.getCustomCalls(), 1);
+  assert.equal(modalCtx.notifications.length, 0);
 
-    registerPermissionSystemCommand(
-      {
-        registerCommand(name: string, nextDefinition: RegisteredCommandDefinition) {
-          registeredName = name;
-          definition = nextDefinition;
-        },
-      } as never,
-      controller as never,
-    );
-
-    assert.equal(registeredName, "permission-system");
-    const registeredDefinition = getRegisteredDefinition(definition);
-    assert.ok(registeredDefinition.description.includes("Configure pi-permission-system"));
-
-    const infoCtx = createCommandContext(true);
-    await registeredDefinition.handler("show", infoCtx.ctx);
-    assert.ok(lastNotification(infoCtx.notifications).message.includes("yoloMode=on"));
-    assert.ok(lastNotification(infoCtx.notifications).message.includes("debugLog=on"));
-
-    await registeredDefinition.handler("path", infoCtx.ctx);
-    assert.equal(lastNotification(infoCtx.notifications).message, `permission-system config: ${configPath}`);
-
-    await registeredDefinition.handler("help", infoCtx.ctx);
-    assert.ok(lastNotification(infoCtx.notifications).message.includes("Usage: /permission-system"));
-
-    await registeredDefinition.handler("reset", infoCtx.ctx);
-    assert.deepEqual(config, DEFAULT_EXTENSION_CONFIG);
-    assert.equal(lastNotification(infoCtx.notifications).message, "Permission system settings reset to defaults.");
-
-    const persisted = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
-    assert.deepEqual(persisted, DEFAULT_EXTENSION_CONFIG);
-
-    await registeredDefinition.handler("unknown", infoCtx.ctx);
-    assert.equal(lastNotification(infoCtx.notifications).level, "warning");
-    assert.ok(lastNotification(infoCtx.notifications).message.includes("Usage: /permission-system"));
-
-    const headlessCtx = createCommandContext(false);
-    await registeredDefinition.handler("", headlessCtx.ctx);
-    assert.equal(lastNotification(headlessCtx.notifications).message, "/permission-system requires interactive TUI mode.");
-
-    const modalCtx = createCommandContext(true);
-    await registeredDefinition.handler("", modalCtx.ctx);
-    assert.equal(modalCtx.getCustomCalls(), 1);
-  } finally {
-    rmSync(baseDir, { recursive: true, force: true });
-  }
+  const subcommandCtx = createCommandContext(true);
+  await registeredDefinition.handler("yolo off", subcommandCtx.ctx);
+  await registeredDefinition.handler("show", subcommandCtx.ctx);
+  await registeredDefinition.handler("reset", subcommandCtx.ctx);
+  assert.equal(subcommandCtx.getCustomCalls(), 3);
+  assert.equal(subcommandCtx.notifications.length, 0);
+  assert.deepEqual(config, {
+    debugLog: true,
+    permissionReviewLog: false,
+    yoloMode: true,
+  });
 });
 
 console.log("All permission-system config-modal tests passed.");
