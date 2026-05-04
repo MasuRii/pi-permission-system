@@ -64,5 +64,8 @@
     "@mariozechner/pi-coding-agent": "^0.72.0",
     "@mariozechner/pi-tui": "^0.72.0",
     "@sinclair/typebox": "^0.34.49"
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1"
   }
 }

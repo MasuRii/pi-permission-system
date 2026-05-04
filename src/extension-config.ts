@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { toRecord } from "./common.js";
+import { formatJsoncConfigLoadWarning, parseJsoncConfig } from "./jsonc-config.js";
 
 export const EXTENSION_ID = "pi-permission-system";
 
@@ -107,7 +108,7 @@ export function loadPermissionSystemConfig(configPath = getPermissionSystemConfi
 
   try {
     const raw = readFileSync(configPath, "utf-8");
-    const parsed = JSON.parse(raw) as unknown;
+    const parsed = parseJsoncConfig(raw, configPath, "permission-system config");
     const config = normalizePermissionSystemConfig(parsed);
     return {
       config,
@@ -115,11 +116,12 @@ export function loadPermissionSystemConfig(configPath = getPermissionSystemConfi
       warning: ensureResult.warning,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     return {
       config: cloneDefaultConfig(),
       created: ensureResult.created,
-      warning: ensureResult.warning ?? `Failed to read permission-system config at '${configPath}': ${message}`,
+      warning: ensureResult.warning
+        ?? formatJsoncConfigLoadWarning(configPath, error, "permission-system config", "using default extension config")
+        ?? undefined,
     };
   }
 }

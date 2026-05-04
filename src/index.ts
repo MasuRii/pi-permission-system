@@ -1014,20 +1014,23 @@ function derivePiProjectPaths(cwd: string | undefined | null): {
   };
 }
 
-function createPermissionManagerForCwd(cwd: string | undefined | null): PermissionManager {
+function createPermissionManagerForCwd(
+  cwd: string | undefined | null,
+  onWarning?: (message: string) => void,
+): PermissionManager {
   const projectPaths = derivePiProjectPaths(cwd);
   if (!projectPaths) {
-    return new PermissionManager();
+    return new PermissionManager({ onWarning });
   }
 
   return new PermissionManager({
     projectGlobalConfigPath: projectPaths.projectGlobalConfigPath,
     projectAgentsDir: projectPaths.projectAgentsDir,
+    onWarning,
   });
 }
 
 export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
-  let permissionManager = new PermissionManager();
   let activeSkillEntries: SkillPromptEntry[] = [];
   let lastKnownActiveAgentName: string | null = null;
   let lastActiveToolsCacheKey: string | null = null;
@@ -1037,6 +1040,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   let isProcessingForwardedRequests = false;
   let runtimeContext: ExtensionContext | null = null;
   let lastConfigWarning: string | null = null;
+  const shownWarnings = new Set<string>();
 
   const invalidateAgentStartCache = (): void => {
     activeSkillEntries = [];
@@ -1044,13 +1048,20 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     lastPromptStateCacheKey = null;
   };
 
+  const resetShownWarnings = (): void => {
+    shownWarnings.clear();
+  };
+
   const notifyWarning = (message: string): void => {
-    if (!runtimeContext?.hasUI) {
+    if (!runtimeContext?.hasUI || shownWarnings.has(message)) {
       return;
     }
 
+    shownWarnings.add(message);
     runtimeContext.ui.notify(message, "warning");
   };
+
+  let permissionManager = createPermissionManagerForCwd(undefined, notifyWarning);
 
   const refreshExtensionConfig = (ctx?: ExtensionContext): void => {
     if (ctx) {
@@ -1366,8 +1377,9 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
   const refreshSessionRuntimeState = (ctx: ExtensionContext): void => {
     runtimeContext = ctx;
+    resetShownWarnings();
     refreshExtensionConfig(ctx);
-    permissionManager = createPermissionManagerForCwd(ctx.cwd);
+    permissionManager = createPermissionManagerForCwd(ctx.cwd, notifyWarning);
     invalidateAgentStartCache();
     lastKnownActiveAgentName = getActiveAgentName(ctx);
     startForwardedPermissionPolling(ctx);
@@ -1387,7 +1399,10 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
   pi.on("resources_discover", async (event, _ctx) => {
     if (event.reason === "reload") {
-      permissionManager = runtimeContext ? createPermissionManagerForCwd(runtimeContext.cwd) : new PermissionManager();
+      resetShownWarnings();
+      permissionManager = runtimeContext
+        ? createPermissionManagerForCwd(runtimeContext.cwd, notifyWarning)
+        : createPermissionManagerForCwd(undefined, notifyWarning);
       invalidateAgentStartCache();
       writeDebugLog("lifecycle.reload", {
         triggeredBy: "resources_discover",
@@ -1400,6 +1415,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async () => {
     runtimeContext?.ui.setStatus(PERMISSION_SYSTEM_STATUS_KEY, undefined);
+    resetShownWarnings();
     runtimeContext = null;
     unregisterPiPermissionSystemRuntimeApi(runtimeApi ?? undefined);
     runtimeApi = null;

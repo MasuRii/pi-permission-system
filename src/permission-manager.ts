@@ -3,6 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { extractFrontmatter, getNonEmptyString, isPermissionState, parseSimpleYamlMap, toRecord } from "./common.js";
+import { formatJsoncConfigLoadWarning, parseJsoncConfig } from "./jsonc-config.js";
 import type {
   AgentPermissions,
   BashPermissions,
@@ -49,78 +50,6 @@ const EMPTY_GLOBAL_CONFIG: GlobalPermissionConfig = {
   skills: {},
   special: {},
 };
-
-function stripJsonComments(input: string): string {
-  let output = "";
-  let inString = false;
-  let stringQuote: '"' | "'" | "" = "";
-  let escaping = false;
-  let inLineComment = false;
-  let inBlockComment = false;
-
-  for (let i = 0; i < input.length; i++) {
-    const char = input[i];
-    const next = input[i + 1] || "";
-
-    if (inLineComment) {
-      if (char === "\n") {
-        inLineComment = false;
-        output += char;
-      }
-      continue;
-    }
-
-    if (inBlockComment) {
-      if (char === "*" && next === "/") {
-        inBlockComment = false;
-        i++;
-      }
-      continue;
-    }
-
-    if (!inString && char === "/" && next === "/") {
-      inLineComment = true;
-      i++;
-      continue;
-    }
-
-    if (!inString && char === "/" && next === "*") {
-      inBlockComment = true;
-      i++;
-      continue;
-    }
-
-    output += char;
-
-    if (!inString && (char === '"' || char === "'")) {
-      inString = true;
-      stringQuote = char;
-      escaping = false;
-      continue;
-    }
-
-    if (!inString) {
-      continue;
-    }
-
-    if (escaping) {
-      escaping = false;
-      continue;
-    }
-
-    if (char === "\\") {
-      escaping = true;
-      continue;
-    }
-
-    if (char === stringQuote) {
-      inString = false;
-      stringQuote = "";
-    }
-  }
-
-  return output;
-}
 
 function normalizePolicy(value: unknown): PermissionDefaultPolicy {
   const record = toRecord(value);
@@ -174,7 +103,7 @@ function normalizePermissionRecord(value: unknown): Record<string, PermissionSta
 function readConfiguredMcpServerNamesFromConfigPath(configPath: string): string[] {
   try {
     const raw = readFileSync(configPath, "utf-8");
-    const parsed = JSON.parse(stripJsonComments(raw)) as unknown;
+    const parsed = parseJsoncConfig(raw, configPath, "permission config");
     const root = toRecord(parsed);
     const serverRecord = toRecord(root.mcpServers ?? root["mcp-servers"]);
 
@@ -585,6 +514,7 @@ export class PermissionManager {
   private readonly projectAgentConfigCache = new Map<string, FileCacheEntry<AgentPermissions>>();
   private readonly resolvedPermissionsCache = new Map<string, FileCacheEntry<ResolvedPermissions>>();
   private configuredMcpServerNamesCache: FileCacheEntry<readonly string[]> | null = null;
+  private readonly onWarning: ((message: string) => void) | null;
 
   constructor(
     options: {
@@ -595,6 +525,7 @@ export class PermissionManager {
       legacyGlobalSettingsPath?: string;
       globalMcpConfigPath?: string;
       mcpServerNames?: readonly string[];
+      onWarning?: (message: string) => void;
     } = {},
   ) {
     this.globalConfigPath = options.globalConfigPath || defaultGlobalConfigPath();
@@ -606,6 +537,11 @@ export class PermissionManager {
     this.configuredMcpServerNamesOverride = options.mcpServerNames
       ? [...new Set(options.mcpServerNames.map((name) => name.trim()).filter((name) => name.length > 0))]
       : null;
+    this.onWarning = options.onWarning || null;
+  }
+
+  private notifyWarning(message: string): void {
+    this.onWarning?.(message);
   }
 
   private loadGlobalConfig(): GlobalPermissionConfig {
@@ -617,7 +553,7 @@ export class PermissionManager {
     let value: GlobalPermissionConfig;
     try {
       const raw = readFileSync(this.globalConfigPath, "utf-8");
-      const parsed = JSON.parse(stripJsonComments(raw)) as unknown;
+      const parsed = parseJsoncConfig(raw, this.globalConfigPath, "permission config");
       const normalized = normalizeRawPermission(parsed);
 
       value = {
@@ -628,7 +564,16 @@ export class PermissionManager {
         skills: normalized.skills || {},
         special: normalized.special || {},
       };
-    } catch {
+    } catch (error) {
+      const warning = formatJsoncConfigLoadWarning(
+        this.globalConfigPath,
+        error,
+        "permission config",
+        "using ask fallback",
+      );
+      if (warning) {
+        this.notifyWarning(warning);
+      }
       value = EMPTY_GLOBAL_CONFIG;
     }
 
@@ -649,9 +594,18 @@ export class PermissionManager {
     let value: AgentPermissions;
     try {
       const raw = readFileSync(this.projectGlobalConfigPath, "utf-8");
-      const parsed = JSON.parse(stripJsonComments(raw)) as unknown;
+      const parsed = parseJsoncConfig(raw, this.projectGlobalConfigPath, "permission config");
       value = normalizeRawPermission(parsed);
-    } catch {
+    } catch (error) {
+      const warning = formatJsoncConfigLoadWarning(
+        this.projectGlobalConfigPath,
+        error,
+        "permission config",
+        "ignoring project permission overrides",
+      );
+      if (warning) {
+        this.notifyWarning(warning);
+      }
       value = {};
     }
 

@@ -111,6 +111,7 @@ type ExtensionHarnessOptions = {
   selectResponse?: string;
   inputResponse?: string;
   statusUpdates?: Array<{ key: string; value: string | undefined }>;
+  notifications?: Array<{ message: string; level: string }>;
 };
 
 const INHERITED_SUBAGENT_ENV_KEYS = [
@@ -223,7 +224,9 @@ function createMockContext(
       getSessionDir: (): string => cwd,
     },
     ui: {
-      notify: (): void => {},
+      notify: (message: string, level: string): void => {
+        options.notifications?.push({ message, level });
+      },
       setStatus: (key: string, value: string | undefined): void => {
         options.statusUpdates?.push({ key, value });
       },
@@ -297,6 +300,41 @@ await runAsyncTest("Extension exposes a runtime YOLO API for other extensions", 
   assert.equal((globalThis as GlobalWithPermissionSystem).__piPermissionSystem, undefined);
 });
 
+await runAsyncTest("Extension dedupes identical permission parse warnings across lifecycle re-entry", async () => {
+  const notifications: Array<{ message: string; level: string }> = [];
+  const harness = createToolCallHarness(
+    { defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "allow" } },
+    ["read", "write"],
+    { hasUI: true, notifications },
+  );
+
+  try {
+    mkdirSync(join(harness.cwd, ".pi", "agent"), { recursive: true });
+    writeFileSync(
+      join(harness.cwd, ".pi", "agent", "pi-permissions.jsonc"),
+      `{
+  "tools": {
+    "read": "allow",,
+  }
+}
+`,
+      "utf8",
+    );
+
+    const ctx = createMockContext(harness.cwd, harness.prompts, { hasUI: true, notifications });
+    await Promise.resolve(harness.handlers.session_start?.({ reason: "startup" }, ctx));
+    await Promise.resolve(harness.handlers.before_agent_start?.({ systemPrompt: "" }, ctx));
+    await Promise.resolve(harness.handlers.before_agent_start?.({ systemPrompt: "" }, ctx));
+
+    const warnings = notifications.filter((entry) => entry.level === "warning");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]?.message || "", /Failed to parse permission config at/);
+    assert.equal((warnings[0]?.message || "").includes("\n"), false);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
 runTest("Permission-system extension config defaults debug off, review log on, and yolo mode off", () => {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-config-"));
   const configPath = join(baseDir, "config.json");
@@ -340,6 +378,63 @@ runTest("Permission-system extension config loads yolo mode when explicitly enab
       permissionReviewLog: false,
       yoloMode: true,
     });
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+runTest("Permission-system extension config accepts JSONC comments and trailing commas", () => {
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-config-jsonc-"));
+  const configPath = join(baseDir, "config.json");
+
+  try {
+    writeFileSync(
+      configPath,
+      `{
+  // Local extension toggles
+  "debugLog": true,
+  "permissionReviewLog": false,
+  "yoloMode": true,
+}
+`,
+      "utf8",
+    );
+
+    const result = loadPermissionSystemConfig(configPath);
+    assert.equal(result.created, false);
+    assert.equal(result.warning, undefined);
+    assert.deepEqual(result.config, {
+      debugLog: true,
+      permissionReviewLog: false,
+      yoloMode: true,
+    });
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+runTest("Permission-system extension config reports one-line JSONC parse warnings", () => {
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-config-parse-"));
+  const configPath = join(baseDir, "config.json");
+
+  try {
+    writeFileSync(
+      configPath,
+      `{
+  "debugLog": true,,
+  "permissionReviewLog": false
+}
+`,
+      "utf8",
+    );
+
+    const result = loadPermissionSystemConfig(configPath);
+    assert.equal(result.created, false);
+    assert.deepEqual(result.config, DEFAULT_EXTENSION_CONFIG);
+    assert.match(result.warning || "", /Failed to parse permission-system config at/);
+    assert.match(result.warning || "", /line 2, column 20/);
+    assert.match(result.warning || "", /using default extension config\./);
+    assert.equal((result.warning || "").includes("\n"), false);
   } finally {
     rmSync(baseDir, { recursive: true, force: true });
   }
@@ -1795,6 +1890,100 @@ runTest("PermissionManager reads config from PI_CODING_AGENT_DIR when set", () =
     } else {
       delete process.env.PI_CODING_AGENT_DIR;
     }
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+runTest("PermissionManager accepts JSONC comments and trailing commas in policy files", () => {
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-jsonc-"));
+  const agentsDir = join(baseDir, "agents");
+  const projectRoot = join(baseDir, "project");
+  const projectGlobalConfigPath = join(projectRoot, "pi-permissions.jsonc");
+  const projectAgentsDir = join(projectRoot, "agents");
+
+  mkdirSync(agentsDir, { recursive: true });
+  mkdirSync(projectAgentsDir, { recursive: true });
+
+  writeFileSync(
+    join(baseDir, "pi-permissions.jsonc"),
+    `{
+  // Global defaults still apply.
+  "defaultPolicy": {
+    "tools": "deny",
+    "bash": "deny",
+    "mcp": "deny",
+    "skills": "deny",
+    "special": "deny",
+  },
+  "tools": {
+    "read": "allow",
+  },
+}
+`,
+    "utf8",
+  );
+  writeFileSync(
+    projectGlobalConfigPath,
+    `{
+  "tools": {
+    "write": "allow",
+  },
+}
+`,
+    "utf8",
+  );
+
+  try {
+    const manager = new PermissionManager({
+      globalConfigPath: join(baseDir, "pi-permissions.jsonc"),
+      agentsDir,
+      projectGlobalConfigPath,
+      projectAgentsDir,
+    });
+
+    assert.equal(manager.checkPermission("read", {}).state, "allow");
+    assert.equal(manager.checkPermission("write", {}).state, "allow");
+    assert.equal(manager.checkPermission("ls", {}).state, "deny");
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+runTest("PermissionManager warns once with a one-line fallback warning when a policy file has invalid JSONC", () => {
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-invalid-jsonc-"));
+  const agentsDir = join(baseDir, "agents");
+  const globalConfigPath = join(baseDir, "pi-permissions.jsonc");
+  const warnings: string[] = [];
+
+  mkdirSync(agentsDir, { recursive: true });
+  writeFileSync(
+    globalConfigPath,
+    `{
+  "tools": {
+    "read": "allow",,
+  }
+}
+`,
+    "utf8",
+  );
+
+  try {
+    const manager = new PermissionManager({
+      globalConfigPath,
+      agentsDir,
+      onWarning: (message) => {
+        warnings.push(message);
+      },
+    });
+
+    assert.equal(manager.checkPermission("read", {}).state, "ask");
+    assert.equal(manager.checkPermission("read", {}).state, "ask");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0] || "", /Failed to parse permission config at/);
+    assert.match(warnings[0] || "", /line 3, column \d+/);
+    assert.match(warnings[0] || "", /using ask fallback\./);
+    assert.equal((warnings[0] || "").includes("\n"), false);
+  } finally {
     rmSync(baseDir, { recursive: true, force: true });
   }
 });
