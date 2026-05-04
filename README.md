@@ -93,7 +93,7 @@ The extension integrates via Pi's lifecycle hooks:
 - Extension-provided tools like `task`, `mcp`, and third-party tools are handled by exact registered name instead of private built-in hardcodes
 - When a subagent hits an `ask` permission without direct UI access, the request can be forwarded to the main interactive session for confirmation
 - Generic extension-tool approval prompts include a bounded input preview; built-in file tools use concise human-readable summaries instead of raw multiline JSON
-- Permission review logs include bounded `toolInputPreview` values for non-bash/non-MCP tool calls so approvals can be audited without writing raw full payloads
+- Permission review logs include redacted prompt/input metadata for auditing without writing raw prompts, commands, or tool payload previews
 - Path-bearing file tools (`read`, `write`, `edit`, `find`, `grep`, `ls`) evaluate `special.external_directory` before their normal tool permission when an explicit path points outside `ctx.cwd`
 
 ## Configuration
@@ -101,6 +101,8 @@ The extension integrates via Pi's lifecycle hooks:
 ### Extension Config File
 
 **Location:** global Pi extension config (default: `~/.pi/agent/extensions/pi-permission-system/config.json`, respects `PI_CODING_AGENT_DIR`)
+
+Set `PI_PERMISSION_SYSTEM_CONFIG_PATH` to point this extension at a specific config file when the default global path is not appropriate.
 
 The extension creates this file automatically when it is missing. It controls only extension-local logging behavior:
 
@@ -118,7 +120,7 @@ The extension creates this file automatically when it is missing. It controls on
 | `permissionReviewLog` | `true` | Enables the permission request/denial review log at `logs/pi-permission-system-permission-review.jsonl` |
 | `yoloMode` | `false` | Auto-approves `ask` results instead of prompting when yolo mode is enabled |
 
-Both logs write to files only under the extension directory. No debug output is printed to the terminal.
+Both logs write to files only under the extension directory by default. Set `PI_PERMISSION_SYSTEM_LOGS_DIR` to redirect review/debug logs to a specific directory. No debug output is printed to the terminal.
 
 ### Global Policy File
 
@@ -181,7 +183,7 @@ Project-local files use the same formats as the global policy file and global ag
 3. Global agent frontmatter
 4. Project agent frontmatter
 
-Later layers override earlier layers within the same permission category. For wildcard-based sections like `bash`, `mcp`, `skills`, and `special`, matching still follows the extension's existing **last matching rule wins** behavior after the layers are combined.
+Later trusted layers override earlier layers within the same permission category, and project-local layers can tighten policy by adding `deny` rules. Project-local policy cannot relax a `deny` from the global policy file or global agent frontmatter: an `allow` or `ask` in a project policy is ignored when the latest matching trusted layer is `deny`. For wildcard-based sections like `bash`, `mcp`, `skills`, and `special`, matching still follows **last matching rule wins** within the applicable trust boundary, with global/system `deny` rules acting as floors for project-local overrides.
 
 ---
 
@@ -322,7 +324,6 @@ Reserved permission checks:
 |----------------------|------------------------------------------|
 | `doom_loop`          | Controls doom loop detection behavior    |
 | `external_directory` | Enforces ask/allow/deny decisions for path-bearing built-in tools (`read`, `write`, `edit`, `find`, `grep`, `ls`) when they target paths outside the active working directory |
-| `tool_call_limit`    | *(schema only, not enforced yet)*        |
 
 ```jsonc
 {
@@ -431,9 +432,10 @@ When the extension prompts, denies, or forwards permission requests, it can appe
 ```text
 Default global logs directory: ~/.pi/agent/extensions/pi-permission-system/logs/
 Actual global logs directory: $PI_CODING_AGENT_DIR/extensions/pi-permission-system/logs when PI_CODING_AGENT_DIR is set
+Override logs directory: $PI_PERMISSION_SYSTEM_LOGS_DIR when set
 ```
 
-- `pi-permission-system-permission-review.jsonl` — enabled by default for permission review/audit history, including bounded `toolInputPreview` values for non-bash/non-MCP tool calls
+- `pi-permission-system-permission-review.jsonl` — enabled by default for permission review/audit history, including metadata hashes and lengths for prompts, commands, denial reasons, and tool input previews instead of raw sensitive content
 - `pi-permission-system-debug.jsonl` — disabled by default and intended for troubleshooting
 
 ### Architecture
@@ -522,11 +524,14 @@ npx --yes ajv-cli@5 validate \
 
 ## Development
 
+Runtime checks require Node.js 20+; the test suite requires Bun 1.1+.
+
 ```bash
-npm run build    # Compile TypeScript
-npm run lint     # Run linter (uses build)
-npm run test     # Run tests from ./tests
-npm run check    # Run lint + test
+npm run build              # Run TypeScript type checks
+npm run lint               # Run local static checks
+npm run validate:artifacts # Validate JSON/schema/example artifacts
+npm run test               # Run Bun tests from ./tests
+npm run check              # Run static, artifact, and test checks
 ```
 
 ---
