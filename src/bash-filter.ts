@@ -19,6 +19,17 @@ export interface BashPermissionCheck {
   command: string;
 }
 
+const SHELL_CONTROL_OPERATORS = /\s*(?:&&|\|\||;|\|&?)\s*/;
+
+export function splitShellCommand(command: string): string[] {
+  return command
+    .split(SHELL_CONTROL_OPERATORS)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+const STATE_RANK: Record<PermissionState, number> = { deny: 2, ask: 1, allow: 0 };
+
 export class BashFilter {
   private readonly compiledPatterns: CompiledPattern[];
 
@@ -32,17 +43,28 @@ export class BashFilter {
   }
 
   check(command: string): BashPermissionCheck {
-    const match = findCompiledWildcardMatch(this.compiledPatterns, command);
-    if (match) {
-      return {
-        state: match.state,
-        matchedPattern: match.matchedPattern,
-        command,
-      };
+    const segments = splitShellCommand(command);
+    if (segments.length === 0) {
+      return { state: this.defaultState, command };
+    }
+
+    let mostRestrictiveState: PermissionState | null = null;
+    let mostRestrictivePattern: string | undefined;
+
+    for (const segment of segments) {
+      const match = findCompiledWildcardMatch(this.compiledPatterns, segment);
+      const segmentState = match?.state ?? this.defaultState;
+
+      if (mostRestrictiveState === null || STATE_RANK[segmentState] > STATE_RANK[mostRestrictiveState]) {
+        mostRestrictiveState = segmentState;
+        mostRestrictivePattern = match?.matchedPattern;
+        if (mostRestrictiveState === "deny") break;
+      }
     }
 
     return {
-      state: this.defaultState,
+      state: mostRestrictiveState ?? this.defaultState,
+      matchedPattern: mostRestrictivePattern,
       command,
     };
   }
