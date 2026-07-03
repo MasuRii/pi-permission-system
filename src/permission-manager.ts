@@ -25,6 +25,7 @@ import {
   findCompiledWildcardMatch,
   type CompiledWildcardPattern,
 } from "./wildcard-matcher.js";
+import { splitShellCommand } from "./bash-filter.js";
 
 const PERMISSION_POLICY_AGENT_DIR_ENV_KEY = "PI_PERMISSION_SYSTEM_POLICY_AGENT_DIR";
 
@@ -944,16 +945,32 @@ export class PermissionManager {
     if (normalizedToolName === "bash") {
       const record = toRecord(input);
       const command = typeof record.command === "string" ? record.command : "";
-      const result = findCompiledPermissionMatch(compiledBash, command);
+
+      const segments = splitShellCommand(command);
+      const stateRank: Record<PermissionState, number> = { deny: 2, ask: 1, allow: 0 };
+
+      let effectiveState: PermissionState | null = null;
+      let effectivePattern: string | undefined;
+
+      for (const segment of segments) {
+        const segmentResult = findCompiledPermissionMatch(compiledBash, segment);
+        const segmentState = segmentResult?.state
+          ?? toolMatch?.state
+          ?? resolveLayeredDefaultPermission(layers, "bash")?.state
+          ?? DEFAULT_POLICY.bash;
+
+        if (effectiveState === null || stateRank[segmentState] > stateRank[effectiveState]) {
+          effectiveState = segmentState;
+          effectivePattern = segmentResult?.matchedPattern;
+          if (effectiveState === "deny") break;
+        }
+      }
 
       return {
         toolName,
-        state: result?.state
-          ?? toolMatch?.state
-          ?? resolveLayeredDefaultPermission(layers, "bash")?.state
-          ?? DEFAULT_POLICY.bash,
+        state: effectiveState ?? DEFAULT_POLICY.bash,
         command,
-        matchedPattern: result?.matchedPattern,
+        matchedPattern: effectivePattern,
         source: "bash",
       };
     }
