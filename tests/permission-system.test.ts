@@ -788,6 +788,72 @@ await runAsyncTest("before_agent_start returns cached sanitized prompts on repea
   }
 });
 
+await runAsyncTest("before_agent_start accepts OMP-style systemPrompt string arrays without crashing", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "allow", bash: "ask", mcp: "ask", skills: "deny", special: "allow" },
+      skills: { "allowed-skill": "allow", "blocked-skill": "deny" },
+    },
+    ["read"],
+  );
+  const allowedSkillPath = join(harness.cwd, "skills", "allowed", "SKILL.md");
+  const blockedSkillPath = join(harness.cwd, "skills", "blocked", "SKILL.md");
+  // OMP-style payload: systemPrompt arrives as string[] rather than a single string.
+  const promptParts = [
+    '<active_agent name="orchestrator" mode="direct">',
+    [
+      "<available_skills>",
+      "  <skill>",
+      "    <name>allowed-skill</name>",
+      "    <description>Allowed skill</description>",
+      `    <location>${allowedSkillPath}</location>`,
+      "  </skill>",
+      "  <skill>",
+      "    <name>blocked-skill</name>",
+      "    <description>Blocked skill</description>",
+      `    <location>${blockedSkillPath}</location>`,
+      "  </skill>",
+      "</available_skills>",
+    ].join("\n"),
+    [
+      "Available tools:",
+      "- read",
+      "- write",
+      "",
+      "Guidelines:",
+      "- Be concise in your responses",
+    ].join("\n"),
+  ];
+
+  try {
+    const ctx = createMockContext(harness.cwd, harness.prompts);
+    const result = await Promise.resolve(
+      harness.handlers.before_agent_start?.(
+        { systemPrompt: promptParts as unknown as string },
+        ctx,
+      ),
+    ) as Record<string, unknown> | undefined;
+
+    // Must not throw on .match / sanitize when systemPrompt is string[].
+    const systemPrompt = String(result?.systemPrompt ?? "");
+    assert.equal(systemPrompt.includes("allowed-skill"), true, "Allowed skill should remain visible for string[] prompts");
+    assert.equal(systemPrompt.includes("blocked-skill"), false, "Blocked skill should stay hidden for string[] prompts");
+    assert.equal(systemPrompt.includes("Available tools:"), false, "Available tools section should still be sanitized");
+    assert.equal(systemPrompt.includes("Be concise in your responses"), true, "Non-tool guidance should remain");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("normalizeSystemPromptText accepts string and string[] shapes", async () => {
+  const { normalizeSystemPromptText } = await import("../src/common.js");
+  assert.equal(normalizeSystemPromptText("hello"), "hello");
+  assert.equal(normalizeSystemPromptText(["a", "b"]), "a\n\nb");
+  assert.equal(normalizeSystemPromptText(["a", 1, "b"] as unknown as string[]), "a\n\nb");
+  assert.equal(normalizeSystemPromptText(undefined), "");
+  assert.equal(normalizeSystemPromptText(null), "");
+});
+
 await runAsyncTest("Permission-system logger writes review entries without debug and debug entries only when debug is enabled", async () => {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-logs-"));
   const logsDir = join(baseDir, "logs");

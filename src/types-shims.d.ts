@@ -148,7 +148,8 @@ declare module "@earendil-works/pi-coding-agent" {
   }
 
   export interface BeforeAgentStartEvent {
-    systemPrompt: string;
+    // Some hosts (e.g. OMP) pass string[]; classic Pi passes string.
+    systemPrompt: string | string[];
   }
 
   export interface InputEvent {
@@ -187,7 +188,8 @@ declare module "@earendil-works/pi-coding-agent" {
   }
 
   export interface BeforeAgentStartEventResult {
-    systemPrompt?: string;
+    // Hosts may accept string | string[]; runners can coerce string -> [string].
+    systemPrompt?: string | string[];
   }
 
   export interface InputEventResult {
