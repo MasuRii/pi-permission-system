@@ -827,15 +827,19 @@ await runAsyncTest("before_agent_start accepts OMP-style systemPrompt string arr
 
   try {
     const ctx = createMockContext(harness.cwd, harness.prompts);
+    // Pass the array payload directly; harness typing still expects classic Pi's string.
     const result = await Promise.resolve(
       harness.handlers.before_agent_start?.(
-        { systemPrompt: promptParts as unknown as string },
+        { systemPrompt: promptParts as any },
         ctx,
       ),
     ) as Record<string, unknown> | undefined;
 
     // Must not throw on .match / sanitize when systemPrompt is string[].
-    const systemPrompt = String(result?.systemPrompt ?? "");
+    // Assert the return shape explicitly: returning string[] would still stringify,
+    // so String(...) alone would hide that regression.
+    assert.equal(typeof result?.systemPrompt, "string", "Handler should return a sanitized systemPrompt string");
+    const systemPrompt = result.systemPrompt as string;
     assert.equal(systemPrompt.includes("allowed-skill"), true, "Allowed skill should remain visible for string[] prompts");
     assert.equal(systemPrompt.includes("blocked-skill"), false, "Blocked skill should stay hidden for string[] prompts");
     assert.equal(systemPrompt.includes("Available tools:"), false, "Available tools section should still be sanitized");
