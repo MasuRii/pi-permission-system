@@ -11,6 +11,7 @@ import {
   normalizeAgentName,
   normalizePathForComparison,
   normalizePathResourceForPermission,
+  normalizeSystemPromptText,
   PERMISSION_SYSTEM_COMMAND_DESCRIPTION,
   toRecord,
 } from "./common.js";
@@ -294,12 +295,13 @@ function getActiveAgentName(ctx: ExtensionContext): string | null {
   return null;
 }
 
-function getActiveAgentNameFromSystemPrompt(systemPrompt: string | undefined): string | null {
-  if (!systemPrompt) {
+function getActiveAgentNameFromSystemPrompt(systemPrompt: unknown): string | null {
+  const normalized = normalizeSystemPromptText(systemPrompt);
+  if (!normalized) {
     return null;
   }
 
-  const match = systemPrompt.match(ACTIVE_AGENT_TAG_REGEX);
+  const match = normalized.match(ACTIVE_AGENT_TAG_REGEX);
   if (!match || !match[1]) {
     return null;
   }
@@ -315,7 +317,8 @@ function getContextSystemPrompt(ctx: ExtensionContext): string | undefined {
 
   try {
     const systemPrompt: unknown = getSystemPrompt.call(ctx);
-    return typeof systemPrompt === "string" ? systemPrompt : undefined;
+    const normalized = normalizeSystemPromptText(systemPrompt);
+    return normalized || undefined;
   } catch (error) {
     logPermissionForwardingWarning("Failed to read context system prompt for forwarded permission metadata", error);
     return undefined;
@@ -1772,7 +1775,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     queueForwardedPermissionRequestScan();
   };
 
-  const resolveAgentName = (ctx: ExtensionContext, systemPrompt?: string): string | null => {
+  const resolveAgentName = (ctx: ExtensionContext, systemPrompt?: unknown): string | null => {
     const fromSession = getActiveAgentName(ctx);
     if (fromSession) {
       lastKnownActiveAgentName = fromSession;
@@ -1876,7 +1879,9 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     runtimeContext = ctx;
     refreshExtensionConfig(ctx);
     startForwardedPermissionPolling(ctx);
-    const agentName = resolveAgentName(ctx, event.systemPrompt);
+    // Some hosts provide string[]; classic Pi provided string. Normalize once.
+    const systemPromptText = normalizeSystemPromptText(event.systemPrompt);
+    const agentName = resolveAgentName(ctx, systemPromptText);
     const allTools = pi.getAllTools();
     const allowedTools: string[] = [];
 
@@ -1901,7 +1906,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       agentName,
       cwd: ctx.cwd,
       permissionStamp: permissionManager.getPolicyCacheStamp(agentName ?? undefined),
-      systemPrompt: event.systemPrompt,
+      systemPrompt: systemPromptText,
       allowedToolNames: allowedTools,
     });
 
@@ -1912,18 +1917,19 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         : { systemPrompt: lastPromptStateCacheResult.systemPrompt };
     }
 
-    const toolPromptResult = sanitizeAvailableToolsSection(event.systemPrompt, allowedTools);
+    const toolPromptResult = sanitizeAvailableToolsSection(systemPromptText, allowedTools);
     const skillPromptResult = resolveSkillPromptEntries(toolPromptResult.prompt, permissionManager, agentName, ctx.cwd);
     activeSkillEntries = skillPromptResult.entries;
 
     const cachedResult: CachedPromptStateResult = {
       entries: skillPromptResult.entries,
-      systemPrompt: skillPromptResult.prompt !== event.systemPrompt ? skillPromptResult.prompt : undefined,
+      systemPrompt: skillPromptResult.prompt !== systemPromptText ? skillPromptResult.prompt : undefined,
     };
     lastPromptStateCacheKey = promptStateCacheKey;
     lastPromptStateCacheResult = cachedResult;
 
     if (cachedResult.systemPrompt !== undefined) {
+      // Hosts that accept string | string[] can wrap a returned string as [string].
       return { systemPrompt: cachedResult.systemPrompt };
     }
 

@@ -164,6 +164,24 @@ export function normalizeLineEndings(prompt: string): string {
   return prompt.replace(/\r\n/g, "\n");
 }
 
+/**
+ * Some hosts (e.g. OMP) pass `systemPrompt` as `string[]`; classic Pi used `string`.
+ * Normalize both shapes (and unexpected values) to a single string.
+ */
+export function normalizeSystemPromptText(systemPrompt: unknown): string {
+  if (typeof systemPrompt === "string") {
+    return systemPrompt;
+  }
+
+  if (Array.isArray(systemPrompt)) {
+    return systemPrompt
+      .filter((part): part is string => typeof part === "string")
+      .join("\n\n");
+  }
+
+  return "";
+}
+
 export function extractFrontmatter(markdown: string): string {
   const normalized = markdown.replace(/\r\n/g, "\n");
   if (!normalized.startsWith("---\n")) {
