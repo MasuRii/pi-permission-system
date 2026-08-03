@@ -2382,7 +2382,7 @@ runTest("REGRESSION: resolveSkillPromptEntries sanitizes every available_skills 
   }
 });
 
-runTest("resolveSkillPromptEntries hides ask skills from the system prompt", () => {
+runTest("resolveSkillPromptEntries keeps ask skills advertised in the system prompt", () => {
   const { manager, cleanup } = createManager({
     defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "ask", special: "ask" },
     skills: {},
@@ -2403,8 +2403,8 @@ runTest("resolveSkillPromptEntries hides ask skills from the system prompt", () 
 
     const result = resolveSkillPromptEntries(prompt, manager, null, "/cwd");
 
-    assert.equal(result.prompt.includes("unlisted-skill"), false, "Ask/unlisted skills should not be advertised");
-    assert.equal(result.prompt.includes("<available_skills>"), false, "Empty skill blocks should be removed");
+    assert.equal(result.prompt.includes("unlisted-skill"), true, "Ask skills should stay advertised so the model can discover them");
+    assert.equal(result.prompt.includes("<available_skills>"), true, "Blocks containing ask skills should be kept");
     assert.deepEqual(
       result.entries.map((entry) => `${entry.name}:${entry.state}`),
       ["unlisted-skill:ask"],

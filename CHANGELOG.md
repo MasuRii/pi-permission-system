@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Kept `ask` skills advertised in the system prompt instead of hiding them, matching the documented behavior that only denied skills are hidden. Loading an advertised `ask` skill continues to require interactive confirmation via the read-path check.
+
 ## [0.8.0] - 2026-07-03
 
 ### Changed
