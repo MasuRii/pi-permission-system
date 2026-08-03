@@ -240,12 +240,13 @@ export function resolveSkillPromptEntries(
     });
     enforcementEntries.push(...resolvedEntries);
 
-    // The system prompt is an advertised capability list, so only fully allowed
-    // skills should be visible. Ask/deny skills remain tracked for read-path
-    // enforcement but are hidden to avoid context pollution.
-    const visibleSectionEntries = resolvedEntries.filter((entry) => entry.state === "allow");
+    // The system prompt is an advertised capability list. Denied skills are
+    // hidden and stay tracked for read-path enforcement. Ask skills remain
+    // advertised so the model can discover them; loading one triggers the
+    // interactive confirmation in the read-path check.
+    const visibleSectionEntries = resolvedEntries.filter((entry) => entry.state !== "deny");
     for (const entry of resolvedEntries) {
-      if (entry.state !== "allow") {
+      if (entry.state === "deny") {
         hiddenSkillNames.add(entry.name);
       }
     }
