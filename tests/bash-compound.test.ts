@@ -12,8 +12,9 @@ import {
 } from "../src/bash-filter.js";
 import { applyPatternApprovalState } from "../src/index.js";
 import { PermissionManager } from "../src/permission-manager.js";
-import { formatAskPrompt } from "../src/permission-prompts.js";
+import { formatAskPrompt, formatDenyReason } from "../src/permission-prompts.js";
 import { SessionApprovalStore } from "../src/session-approval-store.js";
+import type { PermissionCheckResult } from "../src/types.js";
 
 // ===== combinePermissions tests =====
 
@@ -173,7 +174,7 @@ runTest("opaque e2e: prompt explains unparseable constructs and shows no fake pa
     const result = manager.checkPermission("bash", { command: "echo $(whoami)" });
     assert.equal(result.state, "ask");
     assert.equal(result.hasOpaqueSegments, true);
-    assert.equal(result.matchedPattern, undefined);
+    assert.deepEqual(result.bashReasons, [{ kind: "opaque", segmentIndex: 1 }]);
 
     const prompt = formatAskPrompt(result, undefined, { command: "echo $(whoami)" });
     assert.ok(prompt.includes("unparseable"), `prompt should explain opacity: ${prompt}`);
@@ -201,21 +202,37 @@ runTest("approval re-eval: synthetic * pattern does not leak into matchedPattern
   assert.equal(result.matchedPattern, undefined, "the synthetic * fallback is not a real config rule");
 });
 
-runTest("approval re-eval: real matchedPattern is preserved", () => {
+runTest("approval re-eval: non-bash matchedPattern is preserved", () => {
+  const store = new SessionApprovalStore();
+  const result = applyPatternApprovalState(
+    {
+      toolName: "mcp",
+      state: "ask",
+      target: "server:tool",
+      matchedPattern: "server:*",
+      source: "mcp",
+    },
+    { tool: "server:tool" },
+    store,
+  );
+  assert.equal(result.state, "ask");
+  assert.equal(result.matchedPattern, "server:*");
+});
+
+runTest("approval re-eval: bash results never carry matchedPattern (bashReasons report instead)", () => {
   const store = new SessionApprovalStore();
   const result = applyPatternApprovalState(
     {
       toolName: "bash",
       state: "ask",
       command: "git commit -m x",
-      matchedPattern: "git *commit*",
       source: "bash",
     },
     { command: "git commit -m x" },
     store,
   );
   assert.equal(result.state, "ask");
-  assert.equal(result.matchedPattern, "git *commit*");
+  assert.equal(result.matchedPattern, undefined, "bash reporting uses bashReasons, not matchedPattern");
 });
 
 runTest("approval re-eval: session allow-always still upgrades ask to allow", () => {
@@ -227,6 +244,73 @@ runTest("approval re-eval: session allow-always still upgrades ask to allow", ()
     store,
   );
   assert.equal(result.state, "allow");
+});
+
+// ===== Reason reporting: prompts show every decision-affecting match =====
+
+function toCheckResult(result: ReturnType<BashFilter["check"]>): PermissionCheckResult {
+  return {
+    toolName: "bash",
+    state: result.state,
+    command: result.command,
+    bashReasons: result.reasons,
+    bashSegmentCount: result.segmentCount,
+    hasOpaqueSegments: result.hasOpaqueSegments,
+    source: "bash",
+  };
+}
+
+runTest("prompt: single-segment redirect reason is labeled bashRedirect, no segment prefix", () => {
+  const filter = new BashFilter({ "echo *": "allow" }, "ask", { "*": "ask" });
+  const result = toCheckResult(filter.check("echo hi > /tmp/out.txt"));
+  const prompt = formatAskPrompt(result, undefined, { command: result.command });
+  assert.ok(prompt.includes("redirect to '/tmp/out.txt' matched bashRedirect '*'"), prompt);
+  assert.ok(!prompt.includes("segment 1"), `single-segment prompts omit the prefix: ${prompt}`);
+});
+
+runTest("prompt: compound shows a numbered reason per deciding segment", () => {
+  const filter = new BashFilter({ "git *commit*": "ask", "echo *": "allow" }, "ask", { "*": "ask" });
+  const result = toCheckResult(filter.check("git commit -m x && echo hi > /tmp/out.txt"));
+  const prompt = formatAskPrompt(result, undefined, { command: result.command });
+  assert.ok(prompt.includes("segment 1 matched 'git *commit*'"), prompt);
+  assert.ok(prompt.includes("segment 2 redirect to '/tmp/out.txt' matched bashRedirect '*'"), prompt);
+});
+
+runTest("prompt: allowed segments do not produce reasons", () => {
+  const filter = new BashFilter({ "cd *": "allow", "git *commit*": "ask" }, "ask");
+  const result = toCheckResult(filter.check("cd x && git commit -m y"));
+  assert.equal(result.state, "ask");
+  assert.deepEqual(result.bashReasons, [{ kind: "command", segmentIndex: 2, pattern: "git *commit*" }]);
+  const prompt = formatAskPrompt(result, undefined, { command: result.command });
+  assert.ok(prompt.includes("segment 2 matched 'git *commit*'"), prompt);
+  assert.ok(!prompt.includes("segment 1"), `allow segment 1 must not be reported: ${prompt}`);
+});
+
+runTest("prompt: no-match segment reports the default state", () => {
+  const filter = new BashFilter({}, "ask");
+  const result = toCheckResult(filter.check("weirdcmd foo"));
+  assert.equal(result.state, "ask");
+  assert.deepEqual(result.bashReasons, [{ kind: "default", segmentIndex: 1 }]);
+  const prompt = formatAskPrompt(result, undefined, { command: result.command });
+  assert.ok(prompt.includes("no matching rule (default: ask)"), prompt);
+});
+
+runTest("prompt: opaque segment reason explains itself, no fake pattern", () => {
+  const filter = new BashFilter({ "echo *": "allow" }, "ask");
+  const result = toCheckResult(filter.check("echo $(whoami)"));
+  const prompt = formatAskPrompt(result, undefined, { command: result.command });
+  assert.ok(prompt.includes("contains unparseable constructs — always requires approval"), prompt);
+  assert.ok(!prompt.includes("matched '"), prompt);
+});
+
+runTest("deny reason: shows the deciding segment and rule", () => {
+  const filter = new BashFilter({ "rm *": "deny" }, "ask", { "*": "ask" });
+  const result = toCheckResult(filter.check("echo ok && rm -rf /tmp/x > /tmp/log"));
+  assert.equal(result.state, "deny");
+  assert.deepEqual(result.bashReasons, [{ kind: "command", segmentIndex: 2, pattern: "rm *" }]);
+  const reason = formatDenyReason(result, undefined);
+  assert.ok(reason.includes("segment 2 matched 'rm *'"), reason);
+  assert.ok(reason.includes("Hard stop"), reason);
 });
 
 console.log("Bash compound command test suite complete.");

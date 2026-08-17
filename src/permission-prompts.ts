@@ -1,6 +1,6 @@
 import { getNonEmptyString, toRecord } from "./common.js";
 import { safeJsonStringify } from "./logging.js";
-import type { PermissionCheckResult } from "./types.js";
+import type { BashReason, PermissionCheckResult } from "./types.js";
 import type { SkillPromptEntry } from "./skill-prompt-sanitizer.js";
 
 const STRUCTURED_EDIT_OPERATION_NAMES = new Set(["replace", "append", "prepend", "delete", "replace_text"]);
@@ -53,6 +53,40 @@ function formatPermissionHardStopHint(result: PermissionCheckResult): string {
   return "Hard stop: this permission denial is policy-enforced. Do not retry or investigate bypasses; report the block to the user.";
 }
 
+/**
+ * Format the per-segment reason lines for a bash permission result. One line
+ * per deciding segment (segments whose state set the final state). The
+ * "segment N" prefix is only shown for compound commands (more than one
+ * segment); single-segment commands read as bare reasons.
+ */
+function formatBashReasonLines(result: PermissionCheckResult): string[] {
+  const reasons = result.bashReasons ?? [];
+  if (reasons.length === 0) {
+    return [];
+  }
+  const compound = (result.bashSegmentCount ?? 0) > 1;
+  return reasons.map((reason) => formatBashReasonLine(result, reason, compound));
+}
+
+function formatBashReasonLine(result: PermissionCheckResult, reason: BashReason, compound: boolean): string {
+  const prefix = compound ? `segment ${reason.segmentIndex} ` : "";
+  switch (reason.kind) {
+    case "command":
+      return `  - ${prefix}matched '${reason.pattern}'`;
+    case "redirect":
+      return `  - ${prefix}redirect to '${reason.target}' matched bashRedirect '${reason.pattern}'`;
+    case "opaque":
+      return `  - ${prefix}contains unparseable constructs — always requires approval`;
+    case "default":
+      return `  - ${prefix}no matching rule (default: ${result.state})`;
+  }
+}
+
+function formatBashReasonBlock(result: PermissionCheckResult): string {
+  const lines = formatBashReasonLines(result);
+  return lines.length > 0 ? `\n${lines.join("\n")}\n` : "";
+}
+
 export function formatDenyReason(result: PermissionCheckResult, agentName?: string): string {
   const parts: string[] = [];
 
@@ -70,15 +104,15 @@ export function formatDenyReason(result: PermissionCheckResult, agentName?: stri
     parts.push(`command '${result.command}'`);
   }
 
-  if (result.toolName === "bash" && result.target) {
-    parts.push(`(redirects to '${result.target}')`);
-  }
-
-  if (result.matchedPattern) {
+  let reasonBlock = "";
+  if (result.toolName === "bash") {
+    reasonBlock = formatBashReasonBlock(result);
+  } else if (result.matchedPattern) {
     parts.push(`(matched '${result.matchedPattern}')`);
   }
+  const separator = reasonBlock ? "" : " ";
 
-  return `${parts.join(" ")}. ${formatPermissionHardStopHint(result)}`;
+  return `${parts.join(" ")}.${reasonBlock}${separator}${formatPermissionHardStopHint(result)}`;
 }
 
 export function formatUserDeniedReason(result: PermissionCheckResult, denialReason?: string): string {
@@ -274,12 +308,9 @@ export function formatAskPrompt(result: PermissionCheckResult, agentName?: strin
   const subject = formatAgentSubject(agentName);
 
   if (result.toolName === "bash") {
-    const patternInfo = result.matchedPattern ? ` (matched '${result.matchedPattern}')` : "";
-    const redirectInfo = result.target ? ` (redirects to '${result.target}')` : "";
-    const opaqueInfo = result.hasOpaqueSegments
-      ? " (contains unparseable constructs — always requires approval)"
-      : "";
-    return `${subject} requested bash command '${result.command || ""}'${patternInfo}${redirectInfo}${opaqueInfo}. Allow this command?`;
+    const reasonBlock = formatBashReasonBlock(result);
+    const separator = reasonBlock ? "" : " ";
+    return `${subject} requested bash command '${result.command || ""}'.${reasonBlock}${separator}Allow this command?`;
   }
 
   if ((result.source === "mcp" || result.toolName === "mcp") && result.target) {

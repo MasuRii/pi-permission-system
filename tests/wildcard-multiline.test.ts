@@ -33,7 +33,17 @@ import {
 } from "../src/wildcard-matcher.js";
 import { BashFilter } from "../src/bash-filter.js";
 import { runTest, runAsyncTest } from "./test-harness.js";
-import type { PermissionState } from "../src/types.js";
+import type { BashReason, PermissionState } from "../src/types.js";
+
+/**
+ * The pattern of the segment's command-match reason (undefined when no
+ * command rule matched — default-state or opaque results). Replaces the
+ * old single `matchedPattern` field on BashFilter results.
+ */
+function commandPattern(result: { reasons: BashReason[] }): string | undefined {
+  const reason = result.reasons.find((r) => r.kind === "command");
+  return reason?.kind === "command" ? reason.pattern : undefined;
+}
 
 // ===========================================================================
 // Section 1: compileWildcardPattern — unit tests on regex behavior
@@ -116,7 +126,7 @@ runTest("ISSUE-24: BashFilter.check single-line commands match normally (control
 
   const result = filter.check("python script.py");
   assert.equal(result.state, "allow");
-  assert.equal(result.matchedPattern, "python *");
+  assert.equal(commandPattern(result), "python *");
 });
 
 runTest("ISSUE-24-FIX: BashFilter.check multi-line heredoc command DOES match wildcard (expected-failing TDD)", () => {
@@ -141,7 +151,7 @@ runTest("ISSUE-24-FIX: BashFilter.check multi-line heredoc command DOES match wi
     "ISSUE-24-TDD: Expected multi-line heredoc command to match 'python *' (allow) but ALL patterns currently fail because '.' doesn't match '\\n'. Fix: add 's' flag to compileWildcardPattern()",
   );
   assert.equal(
-    result.matchedPattern,
+    commandPattern(result),
     "python *",
     "ISSUE-24-TDD: Expected matchedPattern to be 'python *' but currently undefined because no pattern matches multi-line strings",
   );
@@ -162,13 +172,13 @@ runTest("ISSUE-24-FIX: BashFilter.check multi-line matches wildcard instead of e
   const exactLine = "git status --short";
   const exactResult = filter.check(exactLine);
   assert.equal(exactResult.state, "allow");
-  assert.equal(exactResult.matchedPattern, "git status --short");
+  assert.equal(commandPattern(exactResult), "git status --short");
 
   // Single-line generic git command matches "git *" (deny) — last-match-wins
   const genericLine = "git commit -m 'test'";
   const genericResult = filter.check(genericLine);
   assert.equal(genericResult.state, "deny");
-  assert.equal(genericResult.matchedPattern, "git *");
+  assert.equal(commandPattern(genericResult), "git *");
 
   // Multi-line with 'git status --short\n# with trailing comment':
   //   Per-segment semantics: the comment line is a no-op and produces no
@@ -182,7 +192,7 @@ runTest("ISSUE-24-FIX: BashFilter.check multi-line matches wildcard instead of e
     "Per-segment: comment line is skipped, 'git status --short' matches exact pattern (allow)",
   );
   assert.equal(
-    multiResult.matchedPattern,
+    commandPattern(multiResult),
     "git status --short",
     "Per-segment: the exact pattern matches the only real segment",
   );
@@ -202,7 +212,7 @@ runTest("ISSUE-24-FIX-EDGE: LF-only newlines in heredoc (expected-failing TDD)",
     "ISSUE-24-TDD: Expected 'cat *' to match LF heredoc (allow) but currently ALL patterns fail",
   );
   assert.equal(
-    result.matchedPattern,
+    commandPattern(result),
     "cat *",
     "ISSUE-24-TDD: Expected matchedPattern 'cat *' for LF heredoc",
   );
@@ -218,7 +228,7 @@ runTest("ISSUE-24-FIX-EDGE: CRLF newlines in heredoc (expected-failing TDD)", ()
     "ISSUE-24-TDD: Expected 'cat *' to match CRLF heredoc (allow) but currently ALL patterns fail",
   );
   assert.equal(
-    result.matchedPattern,
+    commandPattern(result),
     "cat *",
     "ISSUE-24-TDD: Expected matchedPattern 'cat *' for CRLF heredoc",
   );
@@ -235,7 +245,7 @@ runTest("ISSUE-24-FIX-EDGE: Mixed line endings in same command (expected-failing
     "ISSUE-24-TDD: Expected 'python *' to match mixed line endings (allow) but currently ALL patterns fail",
   );
   assert.equal(
-    result.matchedPattern,
+    commandPattern(result),
     "python *",
     "ISSUE-24-TDD: Expected matchedPattern 'python *' for mixed line endings",
   );
@@ -255,7 +265,7 @@ runTest("ISSUE-24-FIX-EDGE: Command with leading newline (expected-failing TDD)"
     "Per-segment: leading newline produces no segment; 'python script.py' matches 'python *' (allow)",
   );
   assert.equal(
-    result.matchedPattern,
+    commandPattern(result),
     "python *",
     "Per-segment: 'python *' matches the only real segment",
   );
@@ -271,7 +281,7 @@ runTest("ISSUE-24-FIX-EDGE: Command with trailing newline (expected-failing TDD)
     "ISSUE-24-TDD: Expected 'python *' to match command with trailing newline (allow) but currently ALL patterns fail",
   );
   assert.equal(
-    result.matchedPattern,
+    commandPattern(result),
     "python *",
     "ISSUE-24-TDD: Expected matchedPattern 'python *' for trailing newline — 'python .*$' with 's' flag matches 'python script.py\\n'",
   );
@@ -287,7 +297,7 @@ runTest("ISSUE-24-FIX-EDGE: Empty lines within multi-line command (expected-fail
     "ISSUE-24-TDD: Expected 'python *' to match command with empty lines inside heredoc (allow) but currently ALL patterns fail",
   );
   assert.equal(
-    result.matchedPattern,
+    commandPattern(result),
     "python *",
     "ISSUE-24-TDD: Expected matchedPattern 'python *' for command with empty interior lines",
   );
@@ -303,7 +313,7 @@ runTest("ISSUE-24-FIX-EDGE: Command with only newline at the end of a single-lin
     "ISSUE-24-TDD: Expected 'git *' to match 'git status\\n' (allow) but trailing newline breaks ALL wildcard patterns without 's' flag",
   );
   assert.equal(
-    result.matchedPattern,
+    commandPattern(result),
     "git *",
     "ISSUE-24-TDD: Expected matchedPattern 'git *' for 'git status\\n'",
   );
@@ -318,7 +328,7 @@ runTest("ISSUE-24-FIX-EDGE: Single-quoted heredoc delimiter (expected-failing TD
   const heredoc = "python - <<'PYTHON'\nprint('hi')\nPYTHON";
   const result = filter.check(heredoc);
   assert.equal(result.state, "allow", "ISSUE-24-TDD: Single-quoted heredoc delimiter should match 'python *'");
-  assert.equal(result.matchedPattern, "python *");
+  assert.equal(commandPattern(result), "python *");
 });
 
 runTest("ISSUE-24-FIX-EDGE: Double-quoted heredoc delimiter (expected-failing TDD)", () => {
@@ -326,7 +336,7 @@ runTest("ISSUE-24-FIX-EDGE: Double-quoted heredoc delimiter (expected-failing TD
   const heredoc = 'python - <<"PY"\nprint("hi")\nPY';
   const result = filter.check(heredoc);
   assert.equal(result.state, "allow", "ISSUE-24-TDD: Double-quoted heredoc delimiter should match 'python *'");
-  assert.equal(result.matchedPattern, "python *");
+  assert.equal(commandPattern(result), "python *");
 });
 
 runTest("ISSUE-24-FIX-EDGE: Unquoted heredoc delimiter (expected-failing TDD)", () => {
@@ -334,7 +344,7 @@ runTest("ISSUE-24-FIX-EDGE: Unquoted heredoc delimiter (expected-failing TDD)", 
   const heredoc = "python - <<PY\nprint('hi')\nPY";
   const result = filter.check(heredoc);
   assert.equal(result.state, "allow", "ISSUE-24-TDD: Unquoted heredoc delimiter should match 'python *'");
-  assert.equal(result.matchedPattern, "python *");
+  assert.equal(commandPattern(result), "python *");
 });
 
 runTest("ISSUE-24-FIX-EDGE: Indented heredoc body with tabs (expected-failing TDD)", () => {
@@ -342,7 +352,7 @@ runTest("ISSUE-24-FIX-EDGE: Indented heredoc body with tabs (expected-failing TD
   const heredoc = "python <<'PY'\n\tprint('indented')\nPY";
   const result = filter.check(heredoc);
   assert.equal(result.state, "allow", "ISSUE-24-TDD: Indented heredoc body should match 'python *'");
-  assert.equal(result.matchedPattern, "python *");
+  assert.equal(commandPattern(result), "python *");
 });
 
  runTest("ISSUE-24-FIX-EDGE: Here-string syntax (opaque → always ask)", () => {
@@ -353,7 +363,7 @@ runTest("ISSUE-24-FIX-EDGE: Indented heredoc body with tabs (expected-failing TD
    const hereString = "cat <<< 'hello\nworld'";
    const result = filter.check(hereString);
    assert.equal(result.state, "ask", "here-string is opaque → always ask, not 'cat *'");
-   assert.equal(result.matchedPattern, undefined);
+   assert.equal(commandPattern(result), undefined);
  });
 
 // ===========================================================================
@@ -376,7 +386,7 @@ runTest("ISSUE-24-FIX-EDGE: Heredoc delimiter containing wildcard-matching chara
   const heredoc = "python - <<'ENDOFFILE'\ncode\nENDOFFILE";
   const result = filter.check(heredoc);
   assert.equal(result.state, "allow", "ISSUE-24-TDD: Heredoc with long delimiter should match 'python *'");
-  assert.equal(result.matchedPattern, "python *");
+  assert.equal(commandPattern(result), "python *");
 });
 
 runTest("ISSUE-24-FIX-EDGE: Command with tabs before heredoc content (expected-failing TDD)", () => {
@@ -384,7 +394,7 @@ runTest("ISSUE-24-FIX-EDGE: Command with tabs before heredoc content (expected-f
   const heredoc = "python <<'PY'\n\t\tprint('deeply indented')\nPY";
   const result = filter.check(heredoc);
   assert.equal(result.state, "allow", "ISSUE-24-TDD: Deeply indented heredoc body should match 'python *'");
-  assert.equal(result.matchedPattern, "python *");
+  assert.equal(commandPattern(result), "python *");
 });
 
 // ===========================================================================
@@ -407,13 +417,13 @@ runTest("ISSUE-24-FIX-EDGE: Last-match-wins precedence with multi-line resolves 
   const singleExact = "git status --short";
   const singleExactResult = filter.check(singleExact);
   assert.equal(singleExactResult.state, "allow", "Single-line exact match works");
-  assert.equal(singleExactResult.matchedPattern, "git status --short");
+  assert.equal(commandPattern(singleExactResult), "git status --short");
 
   // Single-line: 'git commit' matches 'git *' (deny)
   const singleGit = "git commit -m 'test'";
   const singleGitResult = filter.check(singleGit);
   assert.equal(singleGitResult.state, "deny", "Single-line git command matches 'git *'");
-  assert.equal(singleGitResult.matchedPattern, "git *");
+  assert.equal(commandPattern(singleGitResult), "git *");
 
   // Multi-line: the comment line is a no-op and produces no segment, so
   // only 'git status --short' is evaluated → exact pattern (allow).
@@ -427,7 +437,7 @@ runTest("ISSUE-24-FIX-EDGE: Last-match-wins precedence with multi-line resolves 
     "Per-segment: comment line is skipped; 'git status --short' matches exact pattern (allow)",
   );
   assert.equal(
-    result.matchedPattern,
+    commandPattern(result),
     "git status --short",
     "Per-segment: exact pattern matches the only real segment",
   );
@@ -447,7 +457,7 @@ runTest("ISSUE-24-FIX-EDGE: Multi-line deny pattern should also work (expected-f
   const singleControl = "git rm file.txt";
   const singleResult = filter.check(singleControl);
   assert.equal(singleResult.state, "deny", "Single-line 'git rm' correctly matches 'git rm *' (deny)");
-  assert.equal(singleResult.matchedPattern, "git rm *");
+  assert.equal(commandPattern(singleResult), "git rm *");
 
   // Multi-line: should match the deny pattern 'git rm *'
   const multiline = "git rm file.txt\n# confirmation line";
@@ -459,7 +469,7 @@ runTest("ISSUE-24-FIX-EDGE: Multi-line deny pattern should also work (expected-f
     "ISSUE-24-TDD: Multi-line should match 'git rm *' (deny). With 's' flag, 'git rm .*$' will match the multi-line command",
   );
   assert.equal(
-    result.matchedPattern,
+    commandPattern(result),
     "git rm *",
     "ISSUE-24-TDD: Expected matchedPattern 'git rm *' for multi-line git rm command",
   );
@@ -482,7 +492,7 @@ runTest("ISSUE-24-FIX-EDGE: Simulated bash tool payload with embedded newlines i
     "ISSUE-24-TDD: Bash tool command payload with embedded newlines should match 'python *' but currently ALL patterns fail",
   );
   assert.equal(
-    result.matchedPattern,
+    commandPattern(result),
     "python *",
     "ISSUE-24-TDD: Expected matchedPattern 'python *' for bash tool payload",
   );

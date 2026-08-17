@@ -14,6 +14,18 @@ export type BashPermissions = Record<string, PermissionState>;
  */
 export type BashRedirectPermissions = Record<string, PermissionState>;
 
+/**
+ * Why a deciding bash segment has its final state. One reason is emitted per
+ * segment whose state equals the command's final (most restrictive) state.
+ * `segmentIndex` is 1-based; prompts omit the "segment N" prefix for
+ * single-segment commands.
+ */
+export type BashReason =
+  | { kind: "command"; segmentIndex: number; pattern: string }
+  | { kind: "redirect"; segmentIndex: number; target: string; pattern: string }
+  | { kind: "opaque"; segmentIndex: number }
+  | { kind: "default"; segmentIndex: number };
+
 export type SkillPermissions = Record<string, PermissionState>;
 
 export type SpecialPermissionName = "doom_loop" | "external_directory";
@@ -50,5 +62,9 @@ export interface PermissionCheckResult {
   target?: string;
   /** Bash only: the command contains at least one opaque (unparseable) segment. */
   hasOpaqueSegments?: boolean;
+  /** Bash only: per-decision reasons (one per segment that set the final state). */
+  bashReasons?: BashReason[];
+  /** Bash only: total number of segments in the command. */
+  bashSegmentCount?: number;
   source: "tool" | "bash" | "mcp" | "skill" | "special" | "default";
 }

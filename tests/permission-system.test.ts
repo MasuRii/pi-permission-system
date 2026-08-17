@@ -45,9 +45,20 @@ import {
 import { checkRequestedToolRegistration, getToolNameFromValue } from "../src/tool-registry.js";
 import { getPermissionSystemStatus } from "../src/status.js";
 import { sanitizeAvailableToolsSection } from "../src/system-prompt-sanitizer.js";
-import type { AgentPermissions, GlobalPermissionConfig } from "../src/types.js";
+import type { AgentPermissions, BashReason, GlobalPermissionConfig } from "../src/types.js";
 import { canResolveAskPermissionRequest, shouldAutoApprovePermissionState } from "../src/yolo-mode.js";
 import { runAsyncTest, runTest } from "./test-harness.js";
+
+/**
+ * The pattern of the segment's command-match reason (undefined when no
+ * command rule matched — default-state or opaque results). Bash results now
+ * report per-segment reasons instead of a single `matchedPattern`.
+ */
+function commandPattern(result: { reasons?: BashReason[]; bashReasons?: BashReason[] }): string | undefined {
+  const reasons = result.reasons ?? result.bashReasons ?? [];
+  const reason = reasons.find((r) => r.kind === "command");
+  return reason?.kind === "command" ? reason.pattern : undefined;
+}
 
 const TEST_ISOLATED_ENV_KEYS = [
   PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY,
@@ -857,15 +868,15 @@ runTest("BashFilter uses opencode-style last-match hierarchy", () => {
 
   const exact = filter.check("git status");
   assert.equal(exact.state, "allow");
-  assert.equal(exact.matchedPattern, "git status");
+  assert.equal(commandPattern(exact), "git status");
 
   const subcommand = filter.check("git status --short");
   assert.equal(subcommand.state, "ask");
-  assert.equal(subcommand.matchedPattern, "git status *");
+  assert.equal(commandPattern(subcommand), "git status *");
 
   const generic = filter.check("git commit -m test");
   assert.equal(generic.state, "deny");
-  assert.equal(generic.matchedPattern, "git *");
+  assert.equal(commandPattern(generic), "git *");
 });
 
 await runAsyncTest("OpenCode-style Allow Once approves only the current request", async () => {
@@ -1014,12 +1025,12 @@ permission:
     const denied = manager.checkPermission("bash", { command: "rm -rf build" }, "reviewer");
     assert.equal(denied.state, "deny");
     assert.equal(denied.source, "bash");
-    assert.equal(denied.matchedPattern, "rm -rf *");
+    assert.equal(commandPattern(denied), "rm -rf *");
 
     const fallback = manager.checkPermission("bash", { command: "echo hello" }, "reviewer");
     assert.equal(fallback.state, "allow");
     assert.equal(fallback.source, "bash");
-    assert.equal(fallback.matchedPattern, undefined);
+    assert.equal(commandPattern(fallback), undefined);
   } finally {
     cleanup();
   }
@@ -1985,11 +1996,11 @@ runTest("Project-level config cannot relax global bash deny floors", () => {
   try {
     const deniedBuild = manager.checkPermission("bash", { command: "rm -rf build" });
     assert.equal(deniedBuild.state, "deny");
-    assert.equal(deniedBuild.matchedPattern, "rm -rf *");
+    assert.equal(commandPattern(deniedBuild), "rm -rf *");
 
     const denied = manager.checkPermission("bash", { command: "rm -rf node_modules" });
     assert.equal(denied.state, "deny");
-    assert.equal(denied.matchedPattern, "rm -rf *");
+    assert.equal(commandPattern(denied), "rm -rf *");
   } finally {
     cleanup();
   }
@@ -2027,11 +2038,11 @@ permission:
   try {
     const allowed = manager.checkPermission("bash", { command: "git log --oneline" }, "reviewer");
     assert.equal(allowed.state, "allow");
-    assert.equal(allowed.matchedPattern, "git log *");
+    assert.equal(commandPattern(allowed), "git log *");
 
     const denied = manager.checkPermission("bash", { command: "git status" }, "reviewer");
     assert.equal(denied.state, "deny");
-    assert.equal(denied.matchedPattern, "git *");
+    assert.equal(commandPattern(denied), "git *");
   } finally {
     cleanup();
   }
@@ -3361,11 +3372,11 @@ runTest("ISSUE23-BASELINE: PermissionManager wildcard star matches zero-or-more"
   try {
     const r1 = manager.checkPermission("bash", { command: "git status" });
     assert.equal(r1.state, "allow");
-    assert.equal(r1.matchedPattern, "git *");
+    assert.equal(commandPattern(r1), "git *");
 
     const r2 = manager.checkPermission("bash", { command: "git commit -m test" });
     assert.equal(r2.state, "allow");
-    assert.equal(r2.matchedPattern, "git *");
+    assert.equal(commandPattern(r2), "git *");
   } finally { cleanup(); }
 });
 
@@ -3377,11 +3388,11 @@ runTest("ISSUE23-BASELINE: PermissionManager last-match-wins with wildcard patte
   try {
     const r1 = manager.checkPermission("bash", { command: "git status" });
     assert.equal(r1.state, "deny");
-    assert.equal(r1.matchedPattern, "git status");
+    assert.equal(commandPattern(r1), "git status");
 
     const r2 = manager.checkPermission("bash", { command: "git status --short" });
     assert.equal(r2.state, "allow");
-    assert.equal(r2.matchedPattern, "git status *");
+    assert.equal(commandPattern(r2), "git status *");
   } finally { cleanup(); }
 });
 

@@ -999,8 +999,8 @@ export class PermissionManager {
         toolName,
         state: evaluation.state,
         command,
-        matchedPattern: evaluation.matchedPattern,
-        target: evaluation.redirectTarget,
+        bashReasons: evaluation.reasons,
+        bashSegmentCount: evaluation.segmentCount,
         hasOpaqueSegments: evaluation.hasOpaqueSegments,
         source: "bash",
       };

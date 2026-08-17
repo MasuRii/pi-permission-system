@@ -412,7 +412,7 @@ Rules:
 - **fd-dup redirects (`2>&1`, `10>&2`) are exempt** — they never write files and are not evaluated against patterns.
 - **Input redirection `<` is exempt** (read-only).
 - Targets that match no pattern resolve to the default bash state.
-- Ask and deny prompts report the deciding target: `... (redirects to '/tmp/out.txt')`.
+- Ask and deny prompts report every decision-affecting match as a reason line — the matched bash rule per segment and each redirect target with its `bashRedirect` rule (see [Permission Prompt Summaries](#permission-prompt-summaries)).
 
 **Target normalization.** Redirect targets are normalized before matching so patterns can be written for canonical paths:
 - Absolute paths are lexically resolved — `>` targets like `/tmp/../etc/foo` become `/etc/foo`, so `..` cannot evade a rule written for `/etc/*` (and an allow rule for `/tmp/*` cannot leak through it).
@@ -597,10 +597,19 @@ permission:
 
 When a tool permission resolves to `ask`, the prompt is designed to be readable enough for an informed approval decision:
 
-- `bash` prompts show the command and matched bash pattern when available, plus the deciding redirect target when a `bashRedirect` rule forced the decision.
+- `bash` prompts show the command, then one reason line per segment that decided the outcome: the matched bash rule (`matched 'git *commit*'`), each deciding redirect target with its rule (`redirect to '/tmp/out.txt' matched bashRedirect '*'`), opaque segments (`contains unparseable constructs — always requires approval`), or segments with no matching rule (`no matching rule (default: ask)`). Compound commands number the segments (`segment 1`, `segment 2`, …); single-segment commands omit the prefix. Segments that resolved to a less restrictive state than the final decision are not shown.
 - `mcp` prompts show the derived MCP target and matched rule when available.
 - Built-in file tools show concise summaries, such as the target path and edit/write line counts, instead of raw multiline JSON.
 - Unknown or third-party extension tools show a bounded single-line JSON preview of the input so users are not asked to approve a blind tool name.
+
+Example bash approval prompt (compound command, two deciding segments):
+
+```text
+Current agent requested bash command 'git commit -m x && echo hi > /tmp/out.txt'.
+  - segment 1 matched 'git *commit*'
+  - segment 2 redirect to '/tmp/out.txt' matched bashRedirect '*'
+Allow this command?
+```
 
 Example edit approval prompt:
 

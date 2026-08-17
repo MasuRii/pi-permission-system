@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join, normalize } from "node:path";
 
-import type { BashPermissions, PermissionState } from "./types.js";
+import type { BashPermissions, BashReason, PermissionState } from "./types.js";
 import { segmentBash } from "./bash-lexer.js";
 import {
   compileWildcardPatterns,
@@ -88,9 +88,17 @@ export interface BashSegmentMatch {
 
 export interface BashCommandEvaluation {
   state: PermissionState;
-  matchedPattern?: string;
-  /** Redirect target that forced the final (most restrictive) state, if any. */
-  redirectTarget?: string;
+  /**
+   * One reason per segment whose state equals the final (most restrictive)
+   * state, in segment order. The reason for a segment is every factor that
+   * shares the segment's final state: its command-pattern match (when it set
+   * the state), each output-redirect match that set the state, or "default"
+   * when no rule matched at a deciding level. Opaque segments contribute an
+   * "opaque" reason (they always resolve to "ask").
+   */
+  reasons: BashReason[];
+  /** Total number of segments (used to decide "segment N" prompt prefixes). */
+  segmentCount: number;
   /** True when the command contains at least one opaque (unparseable) segment. */
   hasOpaqueSegments: boolean;
 }
@@ -123,31 +131,34 @@ export function evaluateBashCommand(
 ): BashCommandEvaluation {
   const segments = segmentBash(command);
   if (segments.length === 0) {
-    return { state: defaultState, hasOpaqueSegments: false };
+    return { state: defaultState, reasons: [], segmentCount: 0, hasOpaqueSegments: false };
   }
 
-  const segmentResults: Array<{
+  interface RedirectOutcome {
+    target: string;
+    pattern: string;
     state: PermissionState;
-    matchedPattern?: string;
-    redirectTarget?: string;
-  }> = [];
-  let hasOpaqueSegments = false;
+  }
 
-  for (const segment of segments) {
+  interface SegmentOutcome {
+    state: PermissionState;
+    opaque: boolean;
+    commandMatch: { pattern: string; state: PermissionState } | null;
+    redirectMatches: RedirectOutcome[];
+  }
+
+  const outcomes: SegmentOutcome[] = segments.map((segment) => {
     if (segment.opaque) {
       // Opaque segments ALWAYS resolve to "ask" — never the default state.
       // With an allow default, inheriting it would let unparseable commands
       // slip through the user's deny/ask rules.
-      hasOpaqueSegments = true;
-      segmentResults.push({ state: "ask" });
-      continue;
+      return { state: "ask" as PermissionState, opaque: true, commandMatch: null, redirectMatches: [] };
     }
 
     const commandMatch = matchCommand(segment.text);
     let state = commandMatch?.state ?? defaultState;
-    let matchedPattern = commandMatch?.matchedPattern;
-    let redirectTarget: string | undefined;
 
+    const redirectMatches: RedirectOutcome[] = [];
     if (matchRedirectTarget) {
       for (const redirect of segment.redirects) {
         // Only output redirects are evaluated: fd-dup (2>&1) is safe by
@@ -156,38 +167,67 @@ export function evaluateBashCommand(
         const target = normalizeRedirectTarget(redirect.target);
         const redirectMatch = matchRedirectTarget(target);
         const redirectState = redirectMatch?.state ?? defaultState;
+        redirectMatches.push({
+          target,
+          pattern: redirectMatch?.matchedPattern ?? "",
+          state: redirectState,
+        });
         if (PERMISSION_ORDER[redirectState] > PERMISSION_ORDER[state]) {
           state = redirectState;
-          matchedPattern = redirectMatch?.matchedPattern;
-          redirectTarget = target;
         }
       }
     }
 
-    segmentResults.push({ state, matchedPattern, redirectTarget });
-  }
+    return {
+      state,
+      opaque: false,
+      commandMatch: commandMatch
+        ? { pattern: commandMatch.matchedPattern ?? "", state: commandMatch.state }
+        : null,
+      redirectMatches,
+    };
+  });
 
-  const state = combinePermissions(segmentResults.map((r) => r.state));
-  const matchedPatterns = [
-    ...new Set(segmentResults.filter((r) => r.matchedPattern).map((r) => r.matchedPattern!)),
-  ];
-  const decidingRedirect = segmentResults.find(
-    (r) => r.state === state && r.redirectTarget,
-  )?.redirectTarget;
+  const state = combinePermissions(outcomes.map((o) => o.state));
+  const hasOpaqueSegments = outcomes.some((o) => o.opaque);
 
-  return {
-    state,
-    matchedPattern: matchedPatterns.length === 1 ? matchedPatterns[0] : undefined,
-    redirectTarget: decidingRedirect,
-    hasOpaqueSegments,
-  };
+  // Emit one reason per deciding segment (segment state === final state).
+  // Within a deciding segment, every factor that shares the segment's final
+  // state is reported: the command match (when it set the state), each
+  // redirect match that set the state, or "default" when nothing matched at
+  // a deciding level.
+  const reasons: BashReason[] = [];
+  outcomes.forEach((outcome, index) => {
+    if (outcome.state !== state) return;
+    const segmentIndex = index + 1;
+    if (outcome.opaque) {
+      reasons.push({ kind: "opaque", segmentIndex });
+      return;
+    }
+    let emitted = false;
+    if (outcome.commandMatch && outcome.commandMatch.state === outcome.state) {
+      reasons.push({ kind: "command", segmentIndex, pattern: outcome.commandMatch.pattern });
+      emitted = true;
+    }
+    for (const redirect of outcome.redirectMatches) {
+      if (redirect.state === outcome.state) {
+        reasons.push({ kind: "redirect", segmentIndex, target: redirect.target, pattern: redirect.pattern });
+        emitted = true;
+      }
+    }
+    if (!emitted) {
+      reasons.push({ kind: "default", segmentIndex });
+    }
+  });
+
+  return { state, reasons, segmentCount: segments.length, hasOpaqueSegments };
 }
 
 export interface BashPermissionCheck {
   state: PermissionState;
-  matchedPattern?: string;
   command: string;
-  redirectTarget?: string;
+  reasons: BashReason[];
+  segmentCount: number;
   hasOpaqueSegments: boolean;
 }
 
@@ -224,6 +264,6 @@ export class BashFilter {
         ? (target) => findCompiledWildcardMatch(this.compiledRedirectPatterns, target)
         : null,
     );
-    return { ...evaluation, command };
+    return { state: evaluation.state, command, reasons: evaluation.reasons, segmentCount: evaluation.segmentCount, hasOpaqueSegments: evaluation.hasOpaqueSegments };
   }
 }
