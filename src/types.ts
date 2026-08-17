@@ -6,6 +6,14 @@ export type ToolPermissions = Record<string, PermissionState>;
 
 export type BashPermissions = Record<string, PermissionState>;
 
+/**
+ * Pattern-based permissions for bash output-redirect targets (`>`, `>>`, `&>`,
+ * `<>`). Patterns match the unquoted redirect target (for example
+ * "/dev/null"). fd-dup redirects (`2>&1`) are exempt by construction and
+ * input redirection (`<`) is never evaluated.
+ */
+export type BashRedirectPermissions = Record<string, PermissionState>;
+
 export type SkillPermissions = Record<string, PermissionState>;
 
 export type SpecialPermissionName = "doom_loop" | "external_directory";
@@ -24,6 +32,7 @@ export interface AgentPermissions {
   defaultPolicy?: Partial<PermissionDefaultPolicy>;
   tools?: ToolPermissions;
   bash?: BashPermissions;
+  bashRedirect?: BashRedirectPermissions;
   mcp?: ToolPermissions;
   skills?: SkillPermissions;
   special?: SpecialPermissions;
@@ -39,5 +48,7 @@ export interface PermissionCheckResult {
   matchedPattern?: string;
   command?: string;
   target?: string;
+  /** Bash only: the command contains at least one opaque (unparseable) segment. */
+  hasOpaqueSegments?: boolean;
   source: "tool" | "bash" | "mcp" | "skill" | "special" | "default";
 }

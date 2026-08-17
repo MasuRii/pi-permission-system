@@ -171,20 +171,20 @@ runTest("ISSUE-24-FIX: BashFilter.check multi-line matches wildcard instead of e
   assert.equal(genericResult.matchedPattern, "git *");
 
   // Multi-line with 'git status --short\n# with trailing comment':
-  //   - Exact pattern 'git status --short' doesn't match (trailing content)
-  //   - Wildcard 'git *' DOES match (with 's' flag, '.*' matches newlines)
-  //   - Result: deny (from 'git *')
+  //   Per-segment semantics: the comment line is a no-op and produces no
+  //   segment. Only 'git status --short' is evaluated, matching the exact
+  //   pattern (allow). (Old whole-string matching matched 'git *' → deny.)
   const multiline = "git status --short\n# with trailing comment";
   const multiResult = filter.check(multiline);
   assert.equal(
     multiResult.state,
-    "deny",
-    "ISSUE-24-TDD: Expected multi-line to match 'git *' (deny). With 's' flag, '.*' will match across newlines, so 'git *' should match this command",
+    "allow",
+    "Per-segment: comment line is skipped, 'git status --short' matches exact pattern (allow)",
   );
   assert.equal(
     multiResult.matchedPattern,
-    "git *",
-    "ISSUE-24-TDD: Expected matchedPattern to be 'git *' — exact pattern won't match (trailing content), but wildcard 'git *' should match with 's' flag",
+    "git status --short",
+    "Per-segment: the exact pattern matches the only real segment",
   );
 });
 
@@ -245,17 +245,19 @@ runTest("ISSUE-24-FIX-EDGE: Command with leading newline (expected-failing TDD)"
   const filter = new BashFilter({ "*": "deny", "python *": "allow" }, "deny");
   const leadingNewline = "\npython script.py";
   const result = filter.check(leadingNewline);
-  // With 's' flag: 'python *' still doesn't match (^ requires start with "python "),
-  // but '*' catch-all matches. So the result is "deny" from '*'.
+  // Per-segment semantics: the leading newline produces no segment, so the
+  // only segment is 'python script.py', which matches 'python *' (allow).
+  // (Old whole-string matching: 'python *' couldn't match a string starting
+  // with a newline, so the '*' catch-all won and yielded deny.)
   assert.equal(
     result.state,
-    "deny",
-    "ISSUE-24-TDD: Leading newline prevents 'python *' from matching (string starts with \\n, not 'python '). However, '*' (catch-all) should match, yielding 'deny'. Currently ALL patterns fail — matchedPattern should be '*' after fix",
+    "allow",
+    "Per-segment: leading newline produces no segment; 'python script.py' matches 'python *' (allow)",
   );
   assert.equal(
     result.matchedPattern,
-    "*",
-    "ISSUE-24-TDD: Expected matchedPattern '*' for leading newline — 'python *' can't match (wrong start), but '*' should match the whole string with 's' flag",
+    "python *",
+    "Per-segment: 'python *' matches the only real segment",
   );
 });
 
@@ -343,25 +345,30 @@ runTest("ISSUE-24-FIX-EDGE: Indented heredoc body with tabs (expected-failing TD
   assert.equal(result.matchedPattern, "python *");
 });
 
-runTest("ISSUE-24-FIX-EDGE: Here-string syntax (expected-failing TDD)", () => {
-  const filter = new BashFilter({ "*": "deny", "cat *": "allow" }, "deny");
-  // Here-string: cat <<< "string"
-  const hereString = "cat <<< 'hello\nworld'";
-  const result = filter.check(hereString);
-  assert.equal(result.state, "allow", "ISSUE-24-TDD: Here-string with embedded newline should match 'cat *'");
-  assert.equal(result.matchedPattern, "cat *");
-});
+ runTest("ISSUE-24-FIX-EDGE: Here-string syntax (opaque → always ask)", () => {
+   const filter = new BashFilter({ "*": "deny", "cat *": "allow" }, "deny");
+   // Here-string: cat <<< "string". Tokenizer design: <<< is out of scope for
+   // confident classification → unknown token → opaque segment → always ask
+   // (no pattern matching), even though 'cat *' would match the text.
+   const hereString = "cat <<< 'hello\nworld'";
+   const result = filter.check(hereString);
+   assert.equal(result.state, "ask", "here-string is opaque → always ask, not 'cat *'");
+   assert.equal(result.matchedPattern, undefined);
+ });
 
 // ===========================================================================
 // Section 5: Edge cases — deeply nested delimiters and complex heredocs
 // ===========================================================================
 
-runTest("ISSUE-24-FIX-EDGE: Multiple heredocs in one command (chained) (expected-failing TDD)", () => {
+runTest("ISSUE-24-FIX-EDGE: Multiple heredocs in one command (chained) (per-segment)", () => {
   const filter = new BashFilter({ "*": "deny", "cat *": "allow" }, "deny");
+  // Chained heredocs are out of scope for confident classification. Under
+  // per-segment evaluation the first line matches 'cat *' (allow), but the
+  // second heredoc line is its own segment with no command — it falls to the
+  // '*' catch-all (deny) → most restrictive wins → deny.
   const multiHeredoc = "cat <<'A'\nfile1\nA\n<<'B'\nfile2\nB";
   const result = filter.check(multiHeredoc);
-  assert.equal(result.state, "allow", "ISSUE-24-TDD: Chained multiple heredocs should match 'cat *'");
-  assert.equal(result.matchedPattern, "cat *");
+  assert.equal(result.state, "deny", "second heredoc line is a separate segment → catch-all deny");
 });
 
 runTest("ISSUE-24-FIX-EDGE: Heredoc delimiter containing wildcard-matching characters (expected-failing TDD)", () => {
@@ -408,20 +415,21 @@ runTest("ISSUE-24-FIX-EDGE: Last-match-wins precedence with multi-line resolves 
   assert.equal(singleGitResult.state, "deny", "Single-line git command matches 'git *'");
   assert.equal(singleGitResult.matchedPattern, "git *");
 
-  // Multi-line: exact pattern won't match (trailing content), but 'git *'
-  // will match with the 's' flag fix. Result: deny.
+  // Multi-line: the comment line is a no-op and produces no segment, so
+  // only 'git status --short' is evaluated → exact pattern (allow).
+  // (Old whole-string matching: 'git *' matched the whole string → deny.)
   const multiline = "git status --short\n# trailing";
   const result = filter.check(multiline);
 
   assert.equal(
     result.state,
-    "deny",
-    "ISSUE-24-TDD: Multi-line with complex precedence should match 'git *' (deny). Exact pattern 'git status --short' won't match (trailing content), but 'git *' wildcard should match with 's' flag",
+    "allow",
+    "Per-segment: comment line is skipped; 'git status --short' matches exact pattern (allow)",
   );
   assert.equal(
     result.matchedPattern,
-    "git *",
-    "ISSUE-24-TDD: Expected matchedPattern 'git *' — exact pattern is too restrictive for command with trailing content, so wildcard 'git *' should match",
+    "git status --short",
+    "Per-segment: exact pattern matches the only real segment",
   );
 });
 

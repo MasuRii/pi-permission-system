@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Compound command support for `bash` permissions: commands are split into segments on `&&`, `||`, `|&`, `;`, `|`, `&`, and newlines, each segment is matched independently, and the most restrictive result wins (deny > ask > allow). A pattern like `bun * 2>&1*` now matches `cd repo && bun tests/foo.test.ts 2>&1`.
+- New opt-in `bashRedirect` policy section: wildcard patterns on output-redirect targets (`>`, `>>`, `&>`, `<>`). fd-dup (`2>&1`) and input (`<`) redirects are exempt; a redirect can only make a segment's decision more restrictive; unmatched targets fall back to the default bash state. Ask/deny prompts report the deciding redirect target.
+
+### Changed
+- Bash commands containing constructs the tokenizer does not classify (command substitution `$(...)`, backticks, here-strings `<<<`, multiple heredocs on one line, unbalanced or unterminated quotes) are now *opaque*: they skip pattern matching and always resolve to `ask` instead of being matched as one whole string against patterns.
+- `bash` patterns now match per-segment rather than against the full raw command string; trailing comments are ignored when matching.
+
 ## [0.8.0] - 2026-07-03
 
 ### Changed

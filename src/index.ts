@@ -554,7 +554,7 @@ function createConfigEvaluationRule(result: PermissionCheckResult): PatternPermi
   };
 }
 
-function applyPatternApprovalState(
+export function applyPatternApprovalState(
   result: PermissionCheckResult,
   input: unknown,
   sessionApprovals: SessionApprovalStore,
@@ -564,17 +564,27 @@ function applyPatternApprovalState(
   }
 
   const subject = getPatternApprovalSubject(result, input);
+  const configRule = createConfigEvaluationRule(result);
   const evaluated = evaluatePermission(
     result.toolName,
     subject,
-    [createConfigEvaluationRule(result)],
+    [configRule],
     sessionApprovals.getRules(),
   );
+
+  // The config rule falls back to a synthetic "*" pattern when the result
+  // carries no matched pattern (default-state results, opaque bash
+  // segments). That synthetic pattern must not leak into prompts as if it
+  // were a real config rule.
+  const matchedPattern = result.matchedPattern
+    ?? (configRule.pattern === "*" && evaluated.matchedPattern === "*"
+      ? undefined
+      : evaluated.matchedPattern);
 
   return {
     ...result,
     state: evaluated.action,
-    matchedPattern: evaluated.matchedPattern ?? result.matchedPattern,
+    matchedPattern,
   };
 }
 

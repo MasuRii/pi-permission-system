@@ -70,6 +70,10 @@ export function formatDenyReason(result: PermissionCheckResult, agentName?: stri
     parts.push(`command '${result.command}'`);
   }
 
+  if (result.toolName === "bash" && result.target) {
+    parts.push(`(redirects to '${result.target}')`);
+  }
+
   if (result.matchedPattern) {
     parts.push(`(matched '${result.matchedPattern}')`);
   }
@@ -271,7 +275,11 @@ export function formatAskPrompt(result: PermissionCheckResult, agentName?: strin
 
   if (result.toolName === "bash") {
     const patternInfo = result.matchedPattern ? ` (matched '${result.matchedPattern}')` : "";
-    return `${subject} requested bash command '${result.command || ""}'${patternInfo}. Allow this command?`;
+    const redirectInfo = result.target ? ` (redirects to '${result.target}')` : "";
+    const opaqueInfo = result.hasOpaqueSegments
+      ? " (contains unparseable constructs — always requires approval)"
+      : "";
+    return `${subject} requested bash command '${result.command || ""}'${patternInfo}${redirectInfo}${opaqueInfo}. Allow this command?`;
   }
 
   if ((result.source === "mcp" || result.toolName === "mcp") && result.target) {

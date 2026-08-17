@@ -376,7 +376,7 @@ Action-scoped resource rules still respect normal permission guardrails: matchin
 
 ### `bash`
 
-Command patterns use `*` wildcards and match against the full command string. If multiple patterns match, the **last declared matching rule wins**. Put broad fallback rules first and more specific overrides later.
+Command patterns use `*` wildcards. Compound commands are split into segments on `&&`, `||`, `|&`, `;`, `|`, `&`, and newlines — every command and pipeline element is evaluated separately, and the **most restrictive** segment result wins (deny > ask > allow). If multiple patterns match a segment, the **last declared matching rule wins**. Put broad fallback rules first and more specific overrides later.
 
 ```jsonc
 {
@@ -387,6 +387,39 @@ Command patterns use `*` wildcards and match against the full command string. If
   }
 }
 ```
+
+So `cd repo && bun tests/foo.test.ts 2>&1` is checked as two segments — `cd repo` and `bun tests/foo.test.ts 2>&1` — each matched independently. Trailing comments are ignored when matching (`git status # note` still matches the exact pattern `git status`).
+
+**Opaque segments.** Commands containing constructs the tokenizer does not classify — command substitution `$(...)`, backticks, here-strings `<<<`, multiple heredocs on one line, unbalanced or unterminated quotes — are *opaque*: they skip pattern matching entirely and always resolve to `ask`, regardless of your patterns or default policy. This is deliberate: a pattern like `bun *` should not silently permit `bun $(curl ... | sh)`.
+
+### `bashRedirect`
+
+Optional policy for **output redirection targets** (`>`, `>>`, `&>`, `<>`). Opt-in: when this section is absent or empty, redirects do not affect the permission decision at all.
+
+```jsonc
+{
+  "bashRedirect": {
+    "*": "ask",
+    "/dev/null*": "allow",
+    "/dev/std*": "allow"
+  }
+}
+```
+
+Rules:
+- Patterns match the redirect target, using the same wildcard syntax. **Last declared matching rule wins** — declare broad fallbacks like `*` first, specific overrides later.
+- A redirect can only make a segment *more restrictive*: if any redirect target resolves to a state more restrictive than the segment's command state, the segment takes the redirect state. So `bun tests 2>&1` stays `allow` under the example policy (fd-dup is exempt), while `bun tests > /tmp/out.txt` becomes `ask`.
+- **fd-dup redirects (`2>&1`, `10>&2`) are exempt** — they never write files and are not evaluated against patterns.
+- **Input redirection `<` is exempt** (read-only).
+- Targets that match no pattern resolve to the default bash state.
+- Ask and deny prompts report the deciding target: `... (redirects to '/tmp/out.txt')`.
+
+**Target normalization.** Redirect targets are normalized before matching so patterns can be written for canonical paths:
+- Absolute paths are lexically resolved — `>` targets like `/tmp/../etc/foo` become `/etc/foo`, so `..` cannot evade a rule written for `/etc/*` (and an allow rule for `/tmp/*` cannot leak through it).
+- `~` and `~/...` expand to your home directory — in command targets *and* in config patterns, so `{"~/secrets/*": "deny"}` works as expected.
+- Relative targets are left as-is (the cwd at redirect time may differ from the cwd at evaluation time in compound commands like `cd x && cmd > out.txt`), so they simply don't match absolute-path rules and fall through to the default bash state.
+
+Limitations: only redirections are inspected. Commands that write files through plain arguments (`tee file`, `sed -i`, `dd of=...`) are not covered, and redirects inside opaque constructs (e.g. `$(...)`) are not extracted.
 
 ### `mcp`
 
@@ -512,6 +545,20 @@ Reserved permission checks:
 }
 ```
 
+### Safe Redirects Only
+
+Allow commands that only redirect to `/dev/null` (plus fd-dup like `2>&1`), and prompt for anything that writes elsewhere. Note the catch-all `*` is declared **first** — last declared matching rule wins.
+
+```jsonc
+{
+  "bashRedirect": {
+    "*": "ask",
+    "/dev/null*": "allow",
+    "/dev/std*": "allow"
+  }
+}
+```
+
 ### MCP Discovery Only
 
 ```jsonc
@@ -550,7 +597,7 @@ permission:
 
 When a tool permission resolves to `ask`, the prompt is designed to be readable enough for an informed approval decision:
 
-- `bash` prompts show the command and matched bash pattern when available.
+- `bash` prompts show the command and matched bash pattern when available, plus the deciding redirect target when a `bashRedirect` rule forced the decision.
 - `mcp` prompts show the derived MCP target and matched rule when available.
 - Built-in file tools show concise summaries, such as the target path and edit/write line counts, instead of raw multiline JSON.
 - Unknown or third-party extension tools show a bounded single-line JSON preview of the input so users are not asked to approve a blind tool name.
