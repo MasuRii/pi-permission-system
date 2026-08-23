@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Compound command support for `bash` permissions: commands are split into segments on `&&`, `||`, `|&`, `;`, `|`, `&`, and newlines, each segment is matched independently, and the most restrictive result wins (deny > ask > allow). A pattern like `bun * 2>&1*` now matches `cd repo && bun tests/foo.test.ts 2>&1`.
+- Control-flow awareness for `bash` permissions: `if`/`elif`/`then`/`else`/`fi`, `while`/`until`/`do`/`done`, and `for`/`in`/`do`/`done` structures are walked, and their constituent commands (condition + every branch / loop body) become separate segments matched against your rules — a deny rule can no longer be evaded by wrapping the command in an `if`. `for` headers (variable + word list) are data, not commands. Control flow that cannot be walked with confidence (missing terminators, `$(...)`/backticks in a `for` list, nesting beyond 16 levels) makes the whole command opaque (always `ask`).
 - New opt-in `bashRedirect` policy section: wildcard patterns on output-redirect targets (`>`, `>>`, `&>`, `<>`). fd-dup (`2>&1`) and input (`<`) redirects are exempt; a redirect can only make a segment's decision more restrictive; unmatched targets fall back to the default bash state.
 
 ### Changed

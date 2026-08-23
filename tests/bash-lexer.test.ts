@@ -7,6 +7,7 @@ import {
   lexBash,
   normalizeCommand,
   segmentBash,
+  type BashKeyword,
   type BashSegment,
   type BashToken,
   type WordPart,
@@ -494,5 +495,296 @@ expectSegments("segment: the user's originally-failing command", "cd pi-permissi
   { text: "cd pi-permission-system", words: ["cd", "pi-permission-system"], redirects: [], opaque: false },
   { text: "bun tests/foo.test.ts 2>&1", words: ["bun", "tests/foo.test.ts"], redirects: [{ op: ">", fd: 2, target: "1", isFdDup: true }], opaque: false },
 ]);
+
+// ===========================================================================
+// Control-flow keywords (Phase 6)
+// ===========================================================================
+
+const K = (value: BashKeyword, start: number, end: number): BashToken => ({
+  type: "keyword",
+  value,
+  start,
+  end,
+});
+
+expectTokens("kw: if/then/fi are keywords in command position", "if true; then echo hi; fi", [
+  K("if", 0, 2),
+  W("true", 3, 7),
+  O(";", 7, 8),
+  K("then", 9, 13),
+  W("echo", 14, 18),
+  W("hi", 19, 21),
+  O(";", 21, 22),
+  K("fi", 23, 25),
+]);
+
+expectTokens("kw: reserved word as argument stays a word", "echo if", [
+  W("echo", 0, 4),
+  W("if", 5, 7),
+]);
+
+expectTokens("kw: reserved words as arguments stay words", "echo then fi done do", [
+  W("echo", 0, 4),
+  W("then", 5, 9),
+  W("fi", 10, 12),
+  W("done", 13, 17),
+  W("do", 18, 20),
+]);
+
+expectTokens("kw: grep if file.txt — argument position", "grep if file.txt", [
+  W("grep", 0, 4),
+  W("if", 5, 7),
+  W("file.txt", 8, 16),
+]);
+
+expectTokens("kw: for header — variable is a word, in/do/done are keywords", "for x in a b; do echo $x; done", [
+  K("for", 0, 3),
+  W("x", 4, 5),
+  K("in", 6, 8),
+  W("a", 9, 10),
+  W("b", 11, 12),
+  O(";", 12, 13),
+  K("do", 14, 16),
+  W("echo", 17, 21),
+  W("$x", 22, 24),
+  O(";", 24, 25),
+  K("done", 26, 30),
+]);
+
+expectTokens("kw: reserved words in the for list stay words", "for x in if then fi; do echo hi; done", [
+  K("for", 0, 3),
+  W("x", 4, 5),
+  K("in", 6, 8),
+  W("if", 9, 11),
+  W("then", 12, 16),
+  W("fi", 17, 19),
+  O(";", 19, 20),
+  K("do", 21, 23),
+  W("echo", 24, 28),
+  W("hi", 29, 31),
+  O(";", 31, 32),
+  K("done", 33, 37),
+]);
+
+expectTokens("kw: for without in (defaults to $@)", "for x; do echo $x; done", [
+  K("for", 0, 3),
+  W("x", 4, 5),
+  O(";", 5, 6),
+  K("do", 7, 9),
+  W("echo", 10, 14),
+  W("$x", 15, 17),
+  O(";", 17, 18),
+  K("done", 19, 23),
+]);
+
+expectTokens("kw: while loop", "while pgrep x; do kill x; done", [
+  K("while", 0, 5),
+  W("pgrep", 6, 11),
+  W("x", 12, 13),
+  O(";", 13, 14),
+  K("do", 15, 17),
+  W("kill", 18, 22),
+  W("x", 23, 24),
+  O(";", 24, 25),
+  K("done", 26, 30),
+]);
+
+expectTokens("kw: until loop", "until false; do sleep 1; done", [
+  K("until", 0, 5),
+  W("false", 6, 11),
+  O(";", 11, 12),
+  K("do", 13, 15),
+  W("sleep", 16, 21),
+  W("1", 22, 23),
+  O(";", 23, 24),
+  K("done", 25, 29),
+]);
+
+expectTokens("kw: quoted keyword stays a word", '"if" true; then echo hi; fi', [
+  W("if", 0, 4, [{ text: "if", quote: "double" }]),
+  W("true", 5, 9),
+  O(";", 9, 10),
+  K("then", 11, 15),
+  W("echo", 16, 20),
+  W("hi", 21, 23),
+  O(";", 23, 24),
+  K("fi", 25, 27),
+]);
+
+expectTokens("kw: word after fi is not in command position", "if a; then b; fi extra", [
+  K("if", 0, 2),
+  W("a", 3, 4),
+  O(";", 4, 5),
+  K("then", 6, 10),
+  W("b", 11, 12),
+  O(";", 12, 13),
+  K("fi", 14, 16),
+  W("extra", 17, 22),
+]);
+
+// ---- Phase 6 segmentation ----
+
+expectSegments("cf: if/then/fi — condition and branch are segments", "if true; then echo hi; fi", [
+  { text: "true", words: ["true"], redirects: [], opaque: false },
+  { text: "echo hi", words: ["echo", "hi"], redirects: [], opaque: false },
+]);
+
+expectSegments("cf: if/then/else/fi — all branches are segments", "if a; then b; else c; fi", [
+  { text: "a", words: ["a"], redirects: [], opaque: false },
+  { text: "b", words: ["b"], redirects: [], opaque: false },
+  { text: "c", words: ["c"], redirects: [], opaque: false },
+]);
+
+expectSegments("cf: elif chain — every condition and branch is a segment", "if a; then b; elif c; then d; else e; fi", [
+  { text: "a", words: ["a"], redirects: [], opaque: false },
+  { text: "b", words: ["b"], redirects: [], opaque: false },
+  { text: "c", words: ["c"], redirects: [], opaque: false },
+  { text: "d", words: ["d"], redirects: [], opaque: false },
+  { text: "e", words: ["e"], redirects: [], opaque: false },
+]);
+
+expectSegments("cf: && inside a condition splits it into segments", "if [ -f x ] && [ -r x ]; then rm x; fi", [
+  { text: "[ -f x ]", words: ["[", "-f", "x", "]"], redirects: [], opaque: false },
+  { text: "[ -r x ]", words: ["[", "-r", "x", "]"], redirects: [], opaque: false },
+  { text: "rm x", words: ["rm", "x"], redirects: [], opaque: false },
+]);
+
+expectSegments("cf: while — condition and body are segments", "while pgrep x; do kill x; done", [
+  { text: "pgrep x", words: ["pgrep", "x"], redirects: [], opaque: false },
+  { text: "kill x", words: ["kill", "x"], redirects: [], opaque: false },
+]);
+
+expectSegments("cf: until — condition and body are segments", "until false; do sleep 1; done", [
+  { text: "false", words: ["false"], redirects: [], opaque: false },
+  { text: "sleep 1", words: ["sleep", "1"], redirects: [], opaque: false },
+]);
+
+expectSegments("cf: for — only the body is a segment (list is data)", "for f in a b c; do rm $f; done", [
+  { text: "rm $f", words: ["rm", "$f"], redirects: [], opaque: false },
+]);
+
+expectSegments("cf: for without in — body only", "for f; do echo $f; done", [
+  { text: "echo $f", words: ["echo", "$f"], redirects: [], opaque: false },
+]);
+
+expectSegments("cf: nested if + for", "if a; then for x in b; do c; done; fi", [
+  { text: "a", words: ["a"], redirects: [], opaque: false },
+  { text: "c", words: ["c"], redirects: [], opaque: false },
+]);
+
+expectSegments("cf: newline-separated structure", "if true\nthen\necho hi\nfi", [
+  { text: "true", words: ["true"], redirects: [], opaque: false },
+  { text: "echo hi", words: ["echo", "hi"], redirects: [], opaque: false },
+]);
+
+expectSegments("cf: comment inside a branch is skipped", "if true; then # why\necho hi; fi", [
+  { text: "true", words: ["true"], redirects: [], opaque: false },
+  { text: "echo hi", words: ["echo", "hi"], redirects: [], opaque: false },
+]);
+
+expectSegments("cf: trailing comment in a branch does not affect the text", "if true; then echo hi # bye\nfi", [
+  { text: "true", words: ["true"], redirects: [], opaque: false },
+  { text: "echo hi", words: ["echo", "hi"], redirects: [], opaque: false },
+]);
+
+expectSegments("cf: redirect attaches to the branch command", "if true; then echo hi > out.txt; fi", [
+  { text: "true", words: ["true"], redirects: [], opaque: false },
+  {
+    text: "echo hi > out.txt",
+    words: ["echo", "hi"],
+    redirects: [{ op: ">", fd: null, target: "out.txt", isFdDup: false }],
+    opaque: false,
+  },
+]);
+
+expectSegments("cf: heredoc inside a branch", "if true; then cat <<'EOF'\nbody\nEOF\nfi", [
+  { text: "true", words: ["true"], redirects: [], opaque: false },
+  { text: "cat <<'EOF'", words: ["cat"], redirects: [], opaque: false },
+]);
+
+expectSegments("cf: per-segment opacity is preserved inside structures", "if true; then $(rm x); fi", [
+  { text: "true", words: ["true"], redirects: [], opaque: false },
+  { text: "$(rm x)", words: ["$", "rm", "x"], redirects: [], opaque: true },
+]);
+
+expectSegments("cf: lenient — trailing words after fi are extracted", "if a; then b; fi extra", [
+  { text: "a", words: ["a"], redirects: [], opaque: false },
+  { text: "b", words: ["b"], redirects: [], opaque: false },
+  { text: "extra", words: ["extra"], redirects: [], opaque: false },
+]);
+
+expectSegments("cf: lenient — empty condition still extracts the branch", "if then a; fi", [
+  { text: "a", words: ["a"], redirects: [], opaque: false },
+]);
+
+expectSegments("cf: lenient — newline before do is accepted", "for x in a b\ndo echo hi; done", [
+  { text: "echo hi", words: ["echo", "hi"], redirects: [], opaque: false },
+]);
+
+// ---- Phase 6 structural failures → whole command opaque (always ask) ----
+
+expectSegments("cf: missing fi → whole command opaque", "if a; then b", [
+  { text: "if a; then b", words: ["a", "b"], redirects: [], opaque: true },
+]);
+
+expectSegments("cf: missing done (while) → whole command opaque", "while a; do b", [
+  { text: "while a; do b", words: ["a", "b"], redirects: [], opaque: true },
+]);
+
+expectSegments("cf: missing done (for) → whole command opaque", "for x in l; do b", [
+  { text: "for x in l; do b", words: ["x", "l", "b"], redirects: [], opaque: true },
+]);
+
+expectSegments("cf: missing fi with else → whole command opaque", "if a; then b; else c", [
+  { text: "if a; then b; else c", words: ["a", "b", "c"], redirects: [], opaque: true },
+]);
+
+expectSegments("cf: stray then at input start → whole command opaque", "then echo hi", [
+  { text: "then echo hi", words: ["echo", "hi"], redirects: [], opaque: true },
+]);
+
+expectSegments("cf: bare done → whole command opaque", "done", [
+  { text: "done", words: [], redirects: [], opaque: true },
+]);
+
+expectSegments("cf: bare fi → whole command opaque", "fi", [
+  { text: "fi", words: [], redirects: [], opaque: true },
+]);
+
+expectSegments("cf: for without a variable → whole command opaque", "for in a; do x; done", [
+  { text: "for in a; do x; done", words: ["in", "a", "x"], redirects: [], opaque: true },
+]);
+
+expectSegments("cf: $(...) in the for list → whole command opaque (list is expanded by bash)", "for x in $(ls) a; do echo hi; done", [
+  { text: "for x in $(ls) a; do echo hi; done", words: ["x", "$", "ls", "a", "echo", "hi"], redirects: [], opaque: true },
+]);
+
+expectSegments("cf: for arithmetic form ((...)) → whole command opaque", "for ((i=0; i<10; i++)); do echo hi; done", [
+  { text: "for ((i=0; i<10; i++)); do echo hi; done", words: ["i=0", "i", "i++", "echo", "hi"], redirects: [{ op: "<", fd: null, target: "10", isFdDup: false }], opaque: true },
+]);
+
+expectSegments("cf: brace expansion in the for list → whole command opaque", "for x in {1..10}; do echo hi; done", [
+  { text: "for x in {1..10}; do echo hi; done", words: ["x", "1..10", "echo", "hi"], redirects: [], opaque: true },
+]);
+
+expectSegments("cf: case/esac stays opaque (v1 does not parse case)", "case $x in foo) echo hi;; esac", [
+  { text: "case $x in foo) echo hi", words: ["case", "$x", "in", "foo", "echo", "hi"], redirects: [], opaque: true },
+  { text: "esac", words: ["esac"], redirects: [], opaque: false },
+]);
+
+{
+  // 20 nested if/then structures exceed the depth cap (16) → opaque.
+  const open = Array.from({ length: 20 }, (_, i) => `if a${i}; then`).join(" ");
+  const close = Array.from({ length: 20 }, () => "fi;").join(" ");
+  const input = `${open} echo hi; ${close}`;
+  expectSegments("cf: nesting beyond the depth cap → whole command opaque", input, [
+    {
+      text: input,
+      words: [...Array.from({ length: 20 }, (_, i) => `a${i}`), "echo", "hi"],
+      redirects: [],
+      opaque: true,
+    },
+  ]);
+}
 
 console.log("Bash lexer golden test suite complete.");

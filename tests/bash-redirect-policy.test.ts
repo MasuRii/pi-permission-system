@@ -363,4 +363,35 @@ runTest("redirect e2e: ~ in the config pattern is expanded for command targets",
   }
 });
 
+runTest("e2e: control-flow — deny rule applies to commands inside if/for", () => {
+  const { manager, cleanup } = createManager(
+    baseConfig({
+      bash: { "true": "allow", "rm *": "deny" },
+    }),
+  );
+  try {
+    const result = manager.checkPermission("bash", { command: "if true; then rm -rf /tmp/x; fi" });
+    assert.equal(result.state, "deny", "wrapping a denied command in if must not evade the rule");
+    assert.deepEqual(result.bashReasons, [{ kind: "command", segmentIndex: 2, pattern: "rm *" }]);
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("e2e: control-flow — malformed structure asks despite catch-all allow", () => {
+  const { manager, cleanup } = createManager(
+    baseConfig({
+      defaultPolicy: { tools: "ask", bash: "allow", mcp: "ask", skills: "ask", special: "ask" },
+      bash: { "*": "allow" },
+    }),
+  );
+  try {
+    const result = manager.checkPermission("bash", { command: "for f in a b; do rm $f" });
+    assert.equal(result.state, "ask", "missing done → opaque → always ask");
+    assert.ok(result.hasOpaqueSegments);
+  } finally {
+    cleanup();
+  }
+});
+
 console.log("Bash redirect policy test suite complete.");

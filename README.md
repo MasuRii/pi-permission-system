@@ -392,6 +392,10 @@ So `cd repo && bun tests/foo.test.ts 2>&1` is checked as two segments — `cd re
 
 **Opaque segments.** Commands containing constructs the tokenizer does not classify — command substitution `$(...)`, backticks, here-strings `<<<`, multiple heredocs on one line, unbalanced or unterminated quotes — are *opaque*: they skip pattern matching entirely and always resolve to `ask`, regardless of your patterns or default policy. This is deliberate: a pattern like `bun *` should not silently permit `bun $(curl ... | sh)`.
 
+**Control-flow structures.** `if`/`elif`/`then`/`else`/`fi`, `while`/`until`/`do`/`done`, and `for`/`in`/`do`/`done` are recognized, and their constituent commands are extracted as separate segments: the condition **and** every branch / loop body (any of them can execute). So `if [ -f x ]; then rm x; fi` is checked as `[ -f x]` and `rm x`, and a deny rule for `rm *` cannot be evaded by wrapping the command in an `if`. The `for` header (variable name and word list) is data, not a command — only the loop body is evaluated. Note that conditions are commands: for an `allow` outcome, the condition must also resolve to allow (via a rule or your default policy).
+
+Control flow that cannot be walked with confidence — missing terminators (`fi`/`done`/`do`), stray keywords, `$(...)`/backticks in a `for` word list (bash expands the list), arithmetic `for ((...))`, brace lists like `{1..10}`, or nesting deeper than 16 levels — makes the **whole command** opaque (always `ask`). Malformed control flow is a bash syntax error, and broken commands must not ride catch-all rules. `case`/`esac`, `select`, subshells `( ... )`, and grouping `{ ... }` are not yet parsed and remain opaque.
+
 ### `bashRedirect`
 
 Optional policy for **output redirection targets** (`>`, `>>`, `&>`, `<>`). Opt-in: when this section is absent or empty, redirects do not affect the permission decision at all.

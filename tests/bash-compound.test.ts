@@ -313,4 +313,70 @@ runTest("deny reason: shows the deciding segment and rule", () => {
   assert.ok(reason.includes("Hard stop"), reason);
 });
 
+// ===== Control-flow structures (Phase 6) =====
+
+runTest("cf: rules apply to commands inside if/then/fi", () => {
+  const filter = new BashFilter({ "true": "allow", "rm *": "allow" }, "ask");
+  const result = filter.check("if true; then rm y; fi");
+  assert.equal(result.state, "allow", "condition + branch both match allow rules");
+});
+
+runTest("cf: unmatched condition forces the default state", () => {
+  const filter = new BashFilter({ "rm *": "allow" }, "ask");
+  const result = filter.check("if true; then rm y; fi");
+  assert.equal(result.state, "ask", "condition 'true' matches no rule → default ask");
+  assert.deepEqual(result.reasons, [{ kind: "default", segmentIndex: 1 }]);
+});
+
+runTest("cf: deny rule is not evadable by wrapping the command in if", () => {
+  const filter = new BashFilter({ "true": "allow", "rm *": "deny" }, "ask");
+  const result = filter.check("if true; then rm -rf /tmp/x; fi");
+  assert.equal(result.state, "deny", "the branch command is a real segment and matches the deny rule");
+});
+
+runTest("cf: while loop — condition and body are both evaluated", () => {
+  const filter = new BashFilter({ "pgrep *": "allow", "kill *": "deny" }, "ask");
+  const result = filter.check("while pgrep foo; do kill 12345; done");
+  assert.equal(result.state, "deny", "body command matches deny even inside a loop");
+});
+
+runTest("cf: for loop — only the body is evaluated, not the word list", () => {
+  const filter = new BashFilter({ "rm *": "allow" }, "ask");
+  const result = filter.check("for f in a b c; do rm $f; done");
+  assert.equal(result.state, "allow", "list words are data; the body matches allow");
+  assert.equal(result.segmentCount, 1);
+});
+
+runTest("cf: malformed control flow → opaque → ask despite catch-all allow", () => {
+  const filter = new BashFilter({ "*": "allow" }, "allow");
+  const result = filter.check("if a; then b");
+  assert.equal(result.state, "ask", "missing fi → whole command opaque → always ask");
+  assert.ok(result.hasOpaqueSegments);
+});
+
+runTest("cf: redirect policy applies inside control structures", () => {
+  const filter = new BashFilter({ "true": "allow" }, "allow", { "*": "ask", "/dev/null*": "allow" });
+  const result = filter.check("if true; then echo hi > /tmp/out.txt; fi");
+  assert.equal(result.state, "ask", "redirect target matches * → ask inside the then branch");
+  assert.deepEqual(result.reasons, [
+    { kind: "redirect", segmentIndex: 2, target: "/tmp/out.txt", pattern: "*" },
+  ]);
+});
+
+runTest("prompt: if/then/fi shows a numbered reason per deciding segment", () => {
+  const filter = new BashFilter({}, "ask");
+  const result = toCheckResult(filter.check("if true; then echo hi; fi"));
+  assert.equal(result.state, "ask");
+  const prompt = formatAskPrompt(result, undefined, { command: result.command });
+  assert.ok(prompt.includes("segment 1 no matching rule (default: ask)"), prompt);
+  assert.ok(prompt.includes("segment 2 no matching rule (default: ask)"), prompt);
+});
+
+runTest("prompt: opaque control flow explains itself", () => {
+  const filter = new BashFilter({ "*": "allow" }, "allow");
+  const result = toCheckResult(filter.check("if a; then b"));
+  const prompt = formatAskPrompt(result, undefined, { command: result.command });
+  assert.ok(prompt.includes("contains unparseable constructs — always requires approval"), prompt);
+});
+
 console.log("Bash compound command test suite complete.");
