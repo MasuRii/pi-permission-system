@@ -497,6 +497,81 @@ expectSegments("segment: the user's originally-failing command", "cd pi-permissi
 ]);
 
 // ===========================================================================
+// Assignment prefixes & double-quoted substitutions (plan §6 follow-up)
+// ===========================================================================
+
+expectSegments("segment: leading assignment prefix is stripped from match text", "FOO=bar git push", [
+  { text: "git push", words: ["FOO=bar", "git", "push"], redirects: [], opaque: false },
+]);
+
+expectSegments("segment: multiple leading assignments are stripped", "A=1 B=2 git push", [
+  { text: "git push", words: ["A=1", "B=2", "git", "push"], redirects: [], opaque: false },
+]);
+
+expectSegments("segment: assignment with quoted value is stripped", 'FOO="bar baz" git push', [
+  { text: "git push", words: ["FOO=bar baz", "git", "push"], redirects: [], opaque: false },
+]);
+
+expectSegments("segment: assignment with $VAR value is stripped", "FOO=$BAR git push",
+  [{ text: "git push", words: ["FOO=$BAR", "git", "push"], redirects: [], opaque: false }]);
+
+expectSegments("segment: quoted name is NOT an assignment (bash treats it as a command)", '"FOO=bar" git push', [
+  { text: '"FOO=bar" git push', words: ["FOO=bar", "git", "push"], redirects: [], opaque: false },
+]);
+
+expectSegments("segment: assignment-only segment keeps its full text", "FOO=bar", [
+  { text: "FOO=bar", words: ["FOO=bar"], redirects: [], opaque: false },
+]);
+
+expectSegments("segment: assignment + redirect, no command → no stripping", "FOO=bar > /tmp/out", [
+  {
+    text: "FOO=bar > /tmp/out",
+    words: ["FOO=bar"],
+    redirects: [{ op: ">", fd: null, target: "/tmp/out", isFdDup: false }],
+    opaque: false,
+  },
+]);
+
+expectSegments("segment: redirect between assignment and command → no stripping", "FOO=bar > out git push",
+  [{
+    text: "FOO=bar > out git push",
+    words: ["FOO=bar", "git", "push"],
+    redirects: [{ op: ">", fd: null, target: "out", isFdDup: false }],
+    opaque: false,
+  }]);
+
+expectSegments("segment: assignment prefix stripped per segment in a compound", "FOO=bar git push && bun test", [
+  { text: "git push", words: ["FOO=bar", "git", "push"], redirects: [], opaque: false },
+  { text: "bun test", words: ["bun", "test"], redirects: [], opaque: false },
+]);
+
+expectSegments("segment: double-quoted $(...) in an assignment makes the segment opaque", 'FOO="$(rm -rf /)" git push', [
+  // The prefix is still a syntactic assignment, so it is stripped from the
+  // match text even though opacity makes matching moot (always ask).
+  { text: "git push", words: ["FOO=$(rm -rf /)", "git", "push"], redirects: [], opaque: true },
+]);
+
+expectSegments("segment: double-quoted $(...) in argument position makes the segment opaque", 'git push FOO="$(rm -rf /)"', [
+  { text: 'git push FOO="$(rm -rf /)"', words: ["git", "push", "FOO=$(rm -rf /)"], redirects: [], opaque: true },
+]);
+
+expectSegments("segment: double-quoted backticks make the segment opaque", 'git push FOO="`ls`"', [
+  { text: 'git push FOO="`ls`"', words: ["git", "push", "FOO=`ls`"], redirects: [], opaque: true },
+]);
+
+expectSegments("segment: single-quoted $(...) is inert data (not opaque)", "echo '$(rm -rf /)'", [
+  { text: "echo '$(rm -rf /)'", words: ["echo", "$(rm -rf /)"], redirects: [], opaque: false },
+]);
+
+expectSegments("segment: escaped \\$ in double quotes over-asks (opaque — safe direction)", 'echo "\\$(pwd)"', [
+  { text: 'echo "\\$(pwd)"', words: ["echo", "\\$(pwd)"], redirects: [], opaque: true },
+]);
+
+expectSegments("segment: double-quoted $(...) in a for word list → whole command opaque", 'for f in "a $(b)"; do echo $f; done', [
+  { text: 'for f in "a $(b)"; do echo $f; done', words: ["f", "a $(b)", "echo", "$f"], redirects: [], opaque: true },
+]);
+
+// ===========================================================================
 // Control-flow keywords (Phase 6)
 // ===========================================================================
 

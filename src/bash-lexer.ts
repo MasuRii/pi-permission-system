@@ -14,6 +14,14 @@
  * structure that cannot be walked with confidence makes the whole command
  * one opaque segment.
  *
+ * Two extra safety rules live in segmentation (not lexing):
+ * - A leading run of variable-assignment words (`FOO=bar`) is stripped from
+ *   the segment's match text, so `FOO=bar git push` matches as `git push`
+ *   (anchored rules for the real command cannot be evaded by a prefix).
+ * - A word with a double-quoted part containing `$(` or a backtick makes the
+ *   segment opaque: quoted content is inert data to the lexer, but bash
+ *   executes substitutions inside double quotes at runtime.
+ *
  * See bash-permission-tokenizer-plan.md for the full design.
  */
 
@@ -656,39 +664,103 @@ function parseList(
 }
 
 /**
- * Consume one simple command (words, redirects, heredocs, comments) up to an
+ * True for a bash variable-assignment word: an unquoted `NAME=` prefix
+ * (e.g. `FOO=bar`, `A_B1=x=y`, `FOO="bar baz"`, `FOO=$BAR`). The NAME part
+ * must be unquoted — a quoted name (`"FOO"=bar`) is NOT an assignment in
+ * bash, it is a command name. The value may be quoted; its safety is covered
+ * elsewhere (double-quoted `$(`/backticks → opaque, unquoted ones already
+ * break into unknown tokens).
+ */
+const ASSIGNMENT_WORD = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+function isAssignmentPrefix(t: BashToken): boolean {
+  return (
+    t.type === "word" &&
+    t.parts[0].quote === null &&
+    ASSIGNMENT_WORD.test(t.parts[0].text)
+  );
+}
+
+/**
+ * True when a word has a double-quoted part containing `$(` or a backtick.
+ * The lexer treats quoted content as inert data, but bash executes command
+ * substitutions inside double quotes at runtime — such a word must make its
+ * segment opaque. Single-quoted parts are inert (no expansion) and unquoted
+ * `$(` / backticks already break into `unknown` tokens, so only double
+ * quotes need this check. (Escaped forms like `\$(...)` also trip this —
+ * an over-ask, the safe direction.)
+ */
+function hasQuotedSubstitution(t: BashToken): boolean {
+  return (
+    t.type === "word" &&
+    t.parts.some(
+      (p) => p.quote === "double" && (p.text.includes("$(") || p.text.includes("`")),
+    )
+  );
+}
+
+/**
+ * Consume one simple command
  * operator or keyword. Trailing comments are excluded from the text (a
  * trailing comment is not an argument). Unknown tokens make it opaque.
+ *
+ * A leading run of variable-assignment words (`FOO=bar`) is stripped from the
+ * match text so `FOO=bar git push` matches as `git push` — otherwise an
+ * anchored rule for the real command is evadable under an allow default or a
+ * catch-all. Stripping applies only when the assignments come FIRST (before
+ * any redirect or other token) and a command word follows; a segment of
+ * assignments alone (or with only redirects) keeps its full text.
+ *
+ * A word with a double-quoted part containing `$(` or a backtick makes the
+ * segment opaque (see hasQuotedSubstitution).
  */
 function parseSimpleCommand(
   tokens: readonly BashToken[],
   s: string,
   pos: number,
 ): [BashSegment | null, number] {
-  let start: number | null = null;
-  let end = 0;
-  const words: string[] = [];
-  const redirects: BashRedirect[] = [];
-  let opaque = false;
+  const toks: BashToken[] = [];
   while (pos < tokens.length) {
     const t = tokens[pos];
     if (t.type === "operator" || t.type === "keyword") break;
-    if (t.type === "comment") {
-      pos++;
-      continue;
-    }
-    if (start === null) start = t.start;
-    end = t.end;
-    if (t.type === "word") words.push(t.value);
-    else if (t.type === "redirect") {
+    toks.push(t);
+    pos++;
+  }
+
+  const words: string[] = [];
+  const redirects: BashRedirect[] = [];
+  let opaque = false;
+  for (const t of toks) {
+    if (t.type === "word") {
+      words.push(t.value);
+      if (hasQuotedSubstitution(t)) opaque = true;
+    } else if (t.type === "redirect") {
       redirects.push({ op: t.op, fd: t.fd, target: t.target, isFdDup: t.isFdDup });
     } else if (t.type === "unknown") {
       opaque = true;
     }
-    pos++;
   }
-  if (start === null) return [null, pos];
-  return [{ text: s.slice(start, end), words, redirects, opaque }, pos];
+
+  // Text span: first to last NON-comment token (trailing comments excluded).
+  let start = -1;
+  let end = 0;
+  for (const t of toks) {
+    if (t.type === "comment") continue;
+    if (start === -1) start = t.start;
+    end = t.end;
+  }
+  if (start === -1) return [null, pos]; // comment-only region
+
+  // Strip a leading run of assignment words from the match text (when a
+  // command word follows them).
+  let j = 0;
+  while (j < toks.length && toks[j].type === "comment") j++;
+  const first = j;
+  while (j < toks.length && isAssignmentPrefix(toks[j])) j++;
+  let matchStart = start;
+  if (j > first && toks[j]?.type === "word") matchStart = toks[j].start;
+
+  return [{ text: s.slice(matchStart, end), words, redirects, opaque }, pos];
 }
 
 /** if COND; then BODY; (elif COND; then BODY;)* (else BODY;)? fi */
@@ -764,7 +836,12 @@ function parseFor(
     // The word list is data, not commands. Bash DOES expand it, so only plain
     // words (and comments) may appear: a $(...)/backtick there is an unknown
     // token that breaks the `do` expectation below → whole command opaque.
+    // A double-quoted substitution is a clean word token but still executes
+    // at runtime → same treatment (whole command opaque).
     while (pos < tokens.length && (tokens[pos].type === "word" || tokens[pos].type === "comment")) {
+      if (tokens[pos].type === "word" && hasQuotedSubstitution(tokens[pos])) {
+        throw new StructureError();
+      }
       pos++;
     }
   }

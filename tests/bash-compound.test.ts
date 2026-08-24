@@ -379,4 +379,89 @@ runTest("prompt: opaque control flow explains itself", () => {
   assert.ok(prompt.includes("contains unparseable constructs — always requires approval"), prompt);
 });
 
+runTest("prompt: opaque control flow explains itself", () => {
+  const filter = new BashFilter({ "*": "allow" }, "allow");
+  const result = toCheckResult(filter.check("if a; then b"));
+  const prompt = formatAskPrompt(result, undefined, { command: result.command });
+  assert.ok(prompt.includes("contains unparseable constructs — always requires approval"), prompt);
+});
+
+// ===== Assignment prefixes & double-quoted substitutions (plan §6 follow-up) =====
+
+runTest("assign: prefix cannot evade an ask rule under an allow default", () => {
+  // The pre-existing hole: `FOO=bar git push` presented as command text
+  // starting with FOO=bar, so anchored `git *` never matched and the allow
+  // default applied. Now stripped → matches `git *` → ask.
+  const filter = new BashFilter({ "git *": "ask" }, "allow");
+  assert.equal(filter.check("FOO=bar git push").state, "ask");
+  assert.equal(filter.check("git push").state, "ask");
+});
+
+runTest("assign: prefix cannot evade a deny rule under a catch-all allow", () => {
+  // Last-match-wins: `*` declared first as the broad fallback.
+  const filter = new BashFilter({ "*": "allow", "rm *": "deny" }, "ask");
+  assert.equal(filter.check("FOO=bar rm -rf /tmp/x").state, "deny");
+  assert.equal(filter.check("A=1 B=2 rm -rf /tmp/x").state, "deny");
+  assert.equal(filter.check("rm -rf /tmp/x").state, "deny");
+});
+
+runTest("assign: stripped prefix matches an allow rule", () => {
+  const filter = new BashFilter({ "git push": "allow" }, "ask");
+  assert.equal(filter.check("FOO=bar git push").state, "allow");
+  assert.equal(filter.check("FOO=bar git push origin").state, "ask", "arg does not match the exact rule");
+});
+
+runTest("assign: assignment-only segment keeps its full text", () => {
+  const filter = new BashFilter({ "FOO=bar": "allow" }, "ask");
+  assert.equal(filter.check("FOO=bar").state, "allow");
+});
+
+runTest("assign: double-quoted $(...) in an argument is opaque (always ask)", () => {
+  // Pre-existing hole: the lexer treated quoted content as inert data, so
+  // this matched `git *` → allow while executing the substitution.
+  const filter = new BashFilter({ "git *": "allow" }, "ask");
+  const result = filter.check('git push FOO="$(rm -rf /)"');
+  assert.equal(result.state, "ask");
+  assert.ok(result.hasOpaqueSegments);
+});
+
+runTest("assign: double-quoted $(...) in an assignment prefix is opaque (always ask)", () => {
+  const filter = new BashFilter({ "git *": "allow", "*": "allow" }, "ask");
+  const result = filter.check('FOO="$(rm -rf /)" git push');
+  assert.equal(result.state, "ask");
+  assert.ok(result.hasOpaqueSegments);
+});
+
+runTest("assign: double-quoted backticks are opaque (always ask)", () => {
+  const filter = new BashFilter({ "echo *": "allow" }, "ask");
+  assert.equal(filter.check('echo "`rm -rf /`"').state, "ask");
+});
+
+runTest("assign: single-quoted $(...) is inert data (not opaque)", () => {
+  const filter = new BashFilter({ "echo *": "allow" }, "ask");
+  assert.equal(filter.check("echo '$(rm -rf /)'").state, "allow");
+});
+
+runTest("assign: escaped \\$ in double quotes over-asks (safe direction)", () => {
+  const filter = new BashFilter({ "echo *": "allow" }, "ask");
+  assert.equal(filter.check('echo "\\$(pwd)"').state, "ask", "false positive → ask, never allow");
+});
+
+runTest("assign: double-quoted $(...) in a for word list → whole command opaque", () => {
+  const filter = new BashFilter({ "*": "allow" }, "ask");
+  const result = filter.check('for f in "a $(b)"; do echo hi; done');
+  assert.equal(result.state, "ask", "bash expands the for list at runtime");
+  assert.ok(result.hasOpaqueSegments);
+});
+
+runTest("assign: prompt explains opacity for a quoted substitution", () => {
+  const filter = new BashFilter({ "git *": "allow" }, "ask");
+  const result = toCheckResult(filter.check('FOO="$(rm -rf /)" git push'));
+  assert.equal(result.state, "ask");
+  assert.deepEqual(result.bashReasons, [{ kind: "opaque", segmentIndex: 1 }]);
+  const prompt = formatAskPrompt(result, undefined, { command: result.command });
+  assert.ok(prompt.includes("unparseable"), prompt);
+  assert.ok(!prompt.includes("matched '"), `no fake pattern: ${prompt}`);
+});
+
 console.log("Bash compound command test suite complete.");
