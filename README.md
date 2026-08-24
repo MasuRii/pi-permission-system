@@ -603,7 +603,7 @@ permission:
 
 When a tool permission resolves to `ask`, the prompt is designed to be readable enough for an informed approval decision:
 
-- `bash` prompts show the command, then one reason line per segment that decided the outcome: the matched bash rule (`matched 'git *commit*'`), each deciding redirect target with its rule (`redirect to '/tmp/out.txt' matched bashRedirect '*'`), opaque segments (`contains unparseable constructs — always requires approval`), or segments with no matching rule (`no matching rule (default: ask)`). Compound commands number the segments (`segment 1`, `segment 2`, …); single-segment commands omit the prefix. Segments that resolved to a less restrictive state than the final decision are not shown.
+For compound commands each reason is followed by the quoted segment text on the next line (truncated to 60 chars, multi-line segments collapsed to one); single-segment commands show the bare reason with no segment reference. Segments that resolved
 - `mcp` prompts show the derived MCP target and matched rule when available.
 - Built-in file tools show concise summaries, such as the target path and edit/write line counts, instead of raw multiline JSON.
 - Unknown or third-party extension tools show a bounded single-line JSON preview of the input so users are not asked to approve a blind tool name.
@@ -612,8 +612,10 @@ Example bash approval prompt (compound command, two deciding segments):
 
 ```text
 Current agent requested bash command 'git commit -m x && echo hi > /tmp/out.txt'.
-  - segment 1 matched 'git *commit*'
-  - segment 2 redirect to '/tmp/out.txt' matched bashRedirect '*'
+ - matched 'git *commit*' for segment:
+   'git commit -m x'
+ - redirect to '/tmp/out.txt' matched bashRedirect '*':
+   'echo hi > /tmp/out.txt'
 Allow this command?
 ```
 

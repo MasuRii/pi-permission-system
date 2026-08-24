@@ -58,7 +58,7 @@ runTest("redirect: unsafe output target forces ask despite allowed command", () 
   const filter = new BashFilter({ "echo *": "allow" }, "ask", { "*": "ask" });
   const result = filter.check("echo hi > /tmp/out.txt");
   assert.equal(result.state, "ask");
-  assert.deepEqual(result.reasons, [{ kind: "redirect", segmentIndex: 1, target: "/tmp/out.txt", pattern: "*" }]);
+  assert.deepEqual(result.reasons, [{ kind: "redirect", segmentIndex: 1, text: "echo hi > /tmp/out.txt", target: "/tmp/out.txt", pattern: "*" }]);
 });
 
 runTest("redirect: mixed safe + unsafe redirects force ask", () => {
@@ -117,7 +117,7 @@ runTest("redirect: compound — second segment's unsafe redirect forces ask", ()
 runTest("redirect: redirect reason reported when the redirect decided", () => {
   const filter = new BashFilter({ "echo *": "allow" }, "ask", { "*": "ask" });
   const result = filter.check("echo hi > /tmp/out.txt");
-  assert.deepEqual(result.reasons, [{ kind: "redirect", segmentIndex: 1, target: "/tmp/out.txt", pattern: "*" }]);
+  assert.deepEqual(result.reasons, [{ kind: "redirect", segmentIndex: 1, text: "echo hi > /tmp/out.txt", target: "/tmp/out.txt", pattern: "*" }]);
 });
 
 runTest("redirect: no redirect reason when the command state already decided", () => {
@@ -126,14 +126,14 @@ runTest("redirect: no redirect reason when the command state already decided", (
   assert.equal(result.state, "deny");
   // The deny comes from the command rule; the ask redirect is less
   // restrictive and does not contribute a reason.
-  assert.deepEqual(result.reasons, [{ kind: "command", segmentIndex: 1, pattern: "rm *" }]);
+  assert.deepEqual(result.reasons, [{ kind: "command", segmentIndex: 1, text: "rm -rf /tmp/x > /tmp/log", pattern: "rm *" }]);
 });
 
 runTest("redirect: quoted target is matched by its unquoted value", () => {
   const filter = new BashFilter({ "echo *": "allow" }, "ask", { "*": "ask" });
   const result = filter.check('echo hi > "/tmp/my out.txt"');
   assert.equal(result.state, "ask");
-  assert.deepEqual(result.reasons, [{ kind: "redirect", segmentIndex: 1, target: "/tmp/my out.txt", pattern: "*" }]);
+  assert.deepEqual(result.reasons, [{ kind: "redirect", segmentIndex: 1, text: 'echo hi > "/tmp/my out.txt"', target: "/tmp/my out.txt", pattern: "*" }]);
 });
 
  runTest("redirect: opaque segment skips redirect policy and always resolves to ask", () => {
@@ -183,14 +183,14 @@ runTest("redirect: /tmp/* allow rule cannot leak to /etc via .. in the target", 
   );
   const result = filter.check("echo hi > /tmp/../etc/foo");
   assert.equal(result.state, "ask");
-  assert.deepEqual(result.reasons, [{ kind: "redirect", segmentIndex: 1, target: "/etc/foo", pattern: "*" }]);
+  assert.deepEqual(result.reasons, [{ kind: "redirect", segmentIndex: 1, text: "echo hi > /tmp/../etc/foo", target: "/etc/foo", pattern: "*" }]);
 });
 
 runTest("redirect: /etc/* deny rule catches ..-spelled targets", () => {
   const filter = new BashFilter({ "echo *": "allow" }, "ask", { "/etc/*": "deny" });
   const result = filter.check("echo hi > /tmp/../etc/foo");
   assert.equal(result.state, "deny");
-  assert.deepEqual(result.reasons, [{ kind: "redirect", segmentIndex: 1, target: "/etc/foo", pattern: "/etc/*" }]);
+  assert.deepEqual(result.reasons, [{ kind: "redirect", segmentIndex: 1, text: "echo hi > /tmp/../etc/foo", target: "/etc/foo", pattern: "/etc/*" }]);
 });
 
 runTest("redirect: ~ in the command target matches an absolute home pattern", () => {
@@ -209,7 +209,7 @@ runTest("redirect: ~ in the config pattern matches a ~ command target", () => {
   // The reported pattern is the expanded form: ~ is expanded before
   // compilation, so the reason shows the absolute rule (matching the
   // expanded target shown alongside it).
-  assert.deepEqual(result.reasons, [{ kind: "redirect", segmentIndex: 1, target: join(homedir(), "secrets/notes.txt"), pattern: join(homedir(), "secrets/*") }]);
+  assert.deepEqual(result.reasons, [{ kind: "redirect", segmentIndex: 1, text: "echo hi > ~/secrets/notes.txt", target: join(homedir(), "secrets/notes.txt"), pattern: join(homedir(), "secrets/*") }]);
 });
 
 runTest("redirect: relative targets match literal rules and fall through otherwise", () => {
@@ -273,7 +273,7 @@ runTest("redirect e2e: unsafe output target forces ask and reports the target", 
   try {
     const result = manager.checkPermission("bash", { command: "echo hi > /tmp/out.txt" });
     assert.equal(result.state, "ask");
-    assert.deepEqual(result.bashReasons, [{ kind: "redirect", segmentIndex: 1, target: "/tmp/out.txt", pattern: "*" }]);
+    assert.deepEqual(result.bashReasons, [{ kind: "redirect", segmentIndex: 1, text: "echo hi > /tmp/out.txt", target: "/tmp/out.txt", pattern: "*" }]);
     assert.equal(result.source, "bash");
   } finally {
     cleanup();
@@ -293,8 +293,8 @@ runTest("redirect e2e: /dev/null target allowed end to end", () => {
     // Both the command rule and the redirect rule resolve to allow; both
     // share the segment's final state, so both are reported.
     assert.deepEqual(result.bashReasons, [
-      { kind: "command", segmentIndex: 1, pattern: "echo *" },
-      { kind: "redirect", segmentIndex: 1, target: "/dev/null", pattern: "/dev/null*" },
+      { kind: "command", segmentIndex: 1, text: "echo hi > /dev/null", pattern: "echo *" },
+      { kind: "redirect", segmentIndex: 1, text: "echo hi > /dev/null", target: "/dev/null", pattern: "/dev/null*" },
     ]);
   } finally {
     cleanup();
@@ -357,7 +357,7 @@ runTest("redirect e2e: ~ in the config pattern is expanded for command targets",
   try {
     const result = manager.checkPermission("bash", { command: "echo hi > ~/secrets/notes.txt" });
     assert.equal(result.state, "deny");
-    assert.deepEqual(result.bashReasons, [{ kind: "redirect", segmentIndex: 1, target: join(homedir(), "secrets/notes.txt"), pattern: join(homedir(), "secrets/*") }]);
+    assert.deepEqual(result.bashReasons, [{ kind: "redirect", segmentIndex: 1, text: "echo hi > ~/secrets/notes.txt", target: join(homedir(), "secrets/notes.txt"), pattern: join(homedir(), "secrets/*") }]);
   } finally {
     cleanup();
   }
@@ -372,7 +372,7 @@ runTest("e2e: control-flow — deny rule applies to commands inside if/for", () 
   try {
     const result = manager.checkPermission("bash", { command: "if true; then rm -rf /tmp/x; fi" });
     assert.equal(result.state, "deny", "wrapping a denied command in if must not evade the rule");
-    assert.deepEqual(result.bashReasons, [{ kind: "command", segmentIndex: 2, pattern: "rm *" }]);
+    assert.deepEqual(result.bashReasons, [{ kind: "command", segmentIndex: 2, text: "rm -rf /tmp/x", pattern: "rm *" }]);
   } finally {
     cleanup();
   }

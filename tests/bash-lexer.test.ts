@@ -548,7 +548,7 @@ expectSegments("segment: assignment prefix stripped per segment in a compound", 
 expectSegments("segment: double-quoted $(...) in an assignment makes the segment opaque", 'FOO="$(rm -rf /)" git push', [
   // The prefix is still a syntactic assignment, so it is stripped from the
   // match text even though opacity makes matching moot (always ask).
-  { text: "git push", words: ["FOO=$(rm -rf /)", "git", "push"], redirects: [], opaque: true },
+  { text: 'FOO="$(rm -rf /)" git push', words: ["FOO=$(rm -rf /)", "git", "push"], redirects: [], opaque: true },
 ]);
 
 expectSegments("segment: double-quoted $(...) in argument position makes the segment opaque", 'git push FOO="$(rm -rf /)"', [

@@ -6,7 +6,7 @@ import type { SkillPromptEntry } from "./skill-prompt-sanitizer.js";
 const STRUCTURED_EDIT_OPERATION_NAMES = new Set(["replace", "append", "prepend", "delete", "replace_text"]);
 
 const TOOL_INPUT_PREVIEW_MAX_LENGTH = 200;
-const TOOL_TEXT_SUMMARY_MAX_LENGTH = 80;
+const TOOL_TEXT_SUMMARY_MAX_LENGTH = 60;
 
 export function getStructuredEditPayloads(inputRecord: Record<string, unknown>): unknown[] {
   if (Array.isArray(inputRecord.edits)) {
@@ -56,7 +56,7 @@ function formatPermissionHardStopHint(result: PermissionCheckResult): string {
 /**
  * Format the per-segment reason lines for a bash permission result. One line
  * per deciding segment (segments whose state set the final state). The
- * "segment N" prefix is only shown for compound commands (more than one
+ * segment-text prefix is only shown for compound commands (more than one
  * segment); single-segment commands read as bare reasons.
  */
 function formatBashReasonLines(result: PermissionCheckResult): string[] {
@@ -69,16 +69,29 @@ function formatBashReasonLines(result: PermissionCheckResult): string[] {
 }
 
 function formatBashReasonLine(result: PermissionCheckResult, reason: BashReason, compound: boolean): string {
-  const prefix = compound ? `segment ${reason.segmentIndex} ` : "";
+  // The quoted segment text identifies which part of a compound command the
+  // reason refers to. Whitespace is normalized so multi-line segments (e.g.
+  // heredocs) stay on one line, and long segments are truncated. In
+  // single-segment commands the segment reference is omitted entirely so the
+  // line reads as a bare reason (no dangling "for segment:" or empty line).
+  const segment = compound ? `\n   '${sanitizeInlineText(reason.text)}'` : "";
   switch (reason.kind) {
     case "command":
-      return `  - ${prefix}matched '${reason.pattern}'`;
+      return compound
+        ? ` - matched '${reason.pattern}' for segment:${segment}`
+        : ` - matched '${reason.pattern}'`;
     case "redirect":
-      return `  - ${prefix}redirect to '${reason.target}' matched bashRedirect '${reason.pattern}'`;
+      return compound
+        ? ` - redirect to '${reason.target}' matched bashRedirect '${reason.pattern}':${segment}`
+        : ` - redirect to '${reason.target}' matched bashRedirect '${reason.pattern}'`;
     case "opaque":
-      return `  - ${prefix}contains unparseable constructs — always requires approval`;
+      return compound
+        ? ` - contains unparseable constructs — always requires approval:${segment}`
+        : ` - contains unparseable constructs — always requires approval`;
     case "default":
-      return `  - ${prefix}no matching rule (default: ${result.state})`;
+      return compound
+        ? ` - no matching rule (default: ${result.state}) for segment:${segment}`
+        : ` - no matching rule (default: ${result.state})`;
   }
 }
 
@@ -131,8 +144,8 @@ function truncateInlineText(value: string, maxLength: number): string {
 }
 
 function sanitizeInlineText(value: string, maxLength = TOOL_TEXT_SUMMARY_MAX_LENGTH): string {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  return normalized ? truncateInlineText(normalized, maxLength) : "empty text";
+  const firstLine = value.split(/\r\n|\r|\n/)[0].trim();
+  return firstLine ? truncateInlineText(firstLine, maxLength) : "empty text";
 }
 
 function countTextLines(value: string): number {

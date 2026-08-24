@@ -752,13 +752,14 @@ function parseSimpleCommand(
   if (start === -1) return [null, pos]; // comment-only region
 
   // Strip a leading run of assignment words from the match text (when a
-  // command word follows them).
+  // command word follows them). If the segment is opaque, keep the full text
+  // so the user can see why it's opaque (e.g. a subshell in the prefix).
   let j = 0;
   while (j < toks.length && toks[j].type === "comment") j++;
   const first = j;
   while (j < toks.length && isAssignmentPrefix(toks[j])) j++;
   let matchStart = start;
-  if (j > first && toks[j]?.type === "word") matchStart = toks[j].start;
+  if (!opaque && j > first && toks[j]?.type === "word") matchStart = toks[j].start;
 
   return [{ text: s.slice(matchStart, end), words, redirects, opaque }, pos];
 }

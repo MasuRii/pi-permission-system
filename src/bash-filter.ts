@@ -200,23 +200,24 @@ export function evaluateBashCommand(
   outcomes.forEach((outcome, index) => {
     if (outcome.state !== state) return;
     const segmentIndex = index + 1;
+    const text = segments[index].text;
     if (outcome.opaque) {
-      reasons.push({ kind: "opaque", segmentIndex });
+      reasons.push({ kind: "opaque", segmentIndex, text });
       return;
     }
     let emitted = false;
     if (outcome.commandMatch && outcome.commandMatch.state === outcome.state) {
-      reasons.push({ kind: "command", segmentIndex, pattern: outcome.commandMatch.pattern });
+      reasons.push({ kind: "command", segmentIndex, text, pattern: outcome.commandMatch.pattern });
       emitted = true;
     }
     for (const redirect of outcome.redirectMatches) {
       if (redirect.state === outcome.state) {
-        reasons.push({ kind: "redirect", segmentIndex, target: redirect.target, pattern: redirect.pattern });
+        reasons.push({ kind: "redirect", segmentIndex, text, target: redirect.target, pattern: redirect.pattern });
         emitted = true;
       }
     }
     if (!emitted) {
-      reasons.push({ kind: "default", segmentIndex });
+      reasons.push({ kind: "default", segmentIndex, text });
     }
   });
 

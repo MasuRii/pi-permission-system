@@ -174,7 +174,7 @@ runTest("opaque e2e: prompt explains unparseable constructs and shows no fake pa
     const result = manager.checkPermission("bash", { command: "echo $(whoami)" });
     assert.equal(result.state, "ask");
     assert.equal(result.hasOpaqueSegments, true);
-    assert.deepEqual(result.bashReasons, [{ kind: "opaque", segmentIndex: 1 }]);
+    assert.deepEqual(result.bashReasons, [{ kind: "opaque", segmentIndex: 1, text: "echo $(whoami)" }]);
 
     const prompt = formatAskPrompt(result, undefined, { command: "echo $(whoami)" });
     assert.ok(prompt.includes("unparseable"), `prompt should explain opacity: ${prompt}`);
@@ -265,6 +265,7 @@ runTest("prompt: single-segment redirect reason is labeled bashRedirect, no segm
   const result = toCheckResult(filter.check("echo hi > /tmp/out.txt"));
   const prompt = formatAskPrompt(result, undefined, { command: result.command });
   assert.ok(prompt.includes("redirect to '/tmp/out.txt' matched bashRedirect '*'"), prompt);
+  assert.ok(!prompt.includes("for segment:"), `single-segment prompts omit the segment reference: ${prompt}`);
   assert.ok(!prompt.includes("segment 1"), `single-segment prompts omit the prefix: ${prompt}`);
 });
 
@@ -272,17 +273,17 @@ runTest("prompt: compound shows a numbered reason per deciding segment", () => {
   const filter = new BashFilter({ "git *commit*": "ask", "echo *": "allow" }, "ask", { "*": "ask" });
   const result = toCheckResult(filter.check("git commit -m x && echo hi > /tmp/out.txt"));
   const prompt = formatAskPrompt(result, undefined, { command: result.command });
-  assert.ok(prompt.includes("segment 1 matched 'git *commit*'"), prompt);
-  assert.ok(prompt.includes("segment 2 redirect to '/tmp/out.txt' matched bashRedirect '*'"), prompt);
+  assert.ok(prompt.includes("matched 'git *commit*' for segment:\n   'git commit -m x'"), prompt);
+  assert.ok(prompt.includes("redirect to '/tmp/out.txt' matched bashRedirect '*':\n   'echo hi > /tmp/out.txt'"), prompt);
 });
 
 runTest("prompt: allowed segments do not produce reasons", () => {
   const filter = new BashFilter({ "cd *": "allow", "git *commit*": "ask" }, "ask");
   const result = toCheckResult(filter.check("cd x && git commit -m y"));
   assert.equal(result.state, "ask");
-  assert.deepEqual(result.bashReasons, [{ kind: "command", segmentIndex: 2, pattern: "git *commit*" }]);
+  assert.deepEqual(result.bashReasons, [{ kind: "command", segmentIndex: 2, text: "git commit -m y", pattern: "git *commit*" }]);
   const prompt = formatAskPrompt(result, undefined, { command: result.command });
-  assert.ok(prompt.includes("segment 2 matched 'git *commit*'"), prompt);
+  assert.ok(prompt.includes("matched 'git *commit*' for segment:\n   'git commit -m y'"), prompt);
   assert.ok(!prompt.includes("segment 1"), `allow segment 1 must not be reported: ${prompt}`);
 });
 
@@ -290,9 +291,10 @@ runTest("prompt: no-match segment reports the default state", () => {
   const filter = new BashFilter({}, "ask");
   const result = toCheckResult(filter.check("weirdcmd foo"));
   assert.equal(result.state, "ask");
-  assert.deepEqual(result.bashReasons, [{ kind: "default", segmentIndex: 1 }]);
+  assert.deepEqual(result.bashReasons, [{ kind: "default", segmentIndex: 1, text: "weirdcmd foo" }]);
   const prompt = formatAskPrompt(result, undefined, { command: result.command });
   assert.ok(prompt.includes("no matching rule (default: ask)"), prompt);
+  assert.ok(!prompt.includes("for segment:"), `single-segment prompts omit the segment reference: ${prompt}`);
 });
 
 runTest("prompt: opaque segment reason explains itself, no fake pattern", () => {
@@ -307,9 +309,9 @@ runTest("deny reason: shows the deciding segment and rule", () => {
   const filter = new BashFilter({ "rm *": "deny" }, "ask", { "*": "ask" });
   const result = toCheckResult(filter.check("echo ok && rm -rf /tmp/x > /tmp/log"));
   assert.equal(result.state, "deny");
-  assert.deepEqual(result.bashReasons, [{ kind: "command", segmentIndex: 2, pattern: "rm *" }]);
+    assert.deepEqual(result.bashReasons, [{ kind: "command", segmentIndex: 2, text: "rm -rf /tmp/x > /tmp/log", pattern: "rm *" }]);
   const reason = formatDenyReason(result, undefined);
-  assert.ok(reason.includes("segment 2 matched 'rm *'"), reason);
+  assert.ok(reason.includes("matched 'rm *' for segment:\n   'rm -rf /tmp/x > /tmp/log'"), reason);
   assert.ok(reason.includes("Hard stop"), reason);
 });
 
@@ -325,7 +327,7 @@ runTest("cf: unmatched condition forces the default state", () => {
   const filter = new BashFilter({ "rm *": "allow" }, "ask");
   const result = filter.check("if true; then rm y; fi");
   assert.equal(result.state, "ask", "condition 'true' matches no rule → default ask");
-  assert.deepEqual(result.reasons, [{ kind: "default", segmentIndex: 1 }]);
+  assert.deepEqual(result.reasons, [{ kind: "default", segmentIndex: 1, text: "true" }]);
 });
 
 runTest("cf: deny rule is not evadable by wrapping the command in if", () => {
@@ -359,7 +361,7 @@ runTest("cf: redirect policy applies inside control structures", () => {
   const result = filter.check("if true; then echo hi > /tmp/out.txt; fi");
   assert.equal(result.state, "ask", "redirect target matches * → ask inside the then branch");
   assert.deepEqual(result.reasons, [
-    { kind: "redirect", segmentIndex: 2, target: "/tmp/out.txt", pattern: "*" },
+    { kind: "redirect", segmentIndex: 2, text: "echo hi > /tmp/out.txt", target: "/tmp/out.txt", pattern: "*" },
   ]);
 });
 
@@ -368,8 +370,8 @@ runTest("prompt: if/then/fi shows a numbered reason per deciding segment", () =>
   const result = toCheckResult(filter.check("if true; then echo hi; fi"));
   assert.equal(result.state, "ask");
   const prompt = formatAskPrompt(result, undefined, { command: result.command });
-  assert.ok(prompt.includes("segment 1 no matching rule (default: ask)"), prompt);
-  assert.ok(prompt.includes("segment 2 no matching rule (default: ask)"), prompt);
+  assert.ok(prompt.includes("no matching rule (default: ask) for segment:\n   'true'"), prompt);
+  assert.ok(prompt.includes("no matching rule (default: ask) for segment:\n   'echo hi'"), prompt);
 });
 
 runTest("prompt: opaque control flow explains itself", () => {
@@ -458,7 +460,7 @@ runTest("assign: prompt explains opacity for a quoted substitution", () => {
   const filter = new BashFilter({ "git *": "allow" }, "ask");
   const result = toCheckResult(filter.check('FOO="$(rm -rf /)" git push'));
   assert.equal(result.state, "ask");
-  assert.deepEqual(result.bashReasons, [{ kind: "opaque", segmentIndex: 1 }]);
+  assert.deepEqual(result.bashReasons, [{ kind: "opaque", segmentIndex: 1, text: 'FOO="$(rm -rf /)" git push' }]);
   const prompt = formatAskPrompt(result, undefined, { command: result.command });
   assert.ok(prompt.includes("unparseable"), prompt);
   assert.ok(!prompt.includes("matched '"), `no fake pattern: ${prompt}`);

@@ -17,14 +17,15 @@ export type BashRedirectPermissions = Record<string, PermissionState>;
 /**
  * Why a deciding bash segment has its final state. One reason is emitted per
  * segment whose state equals the command's final (most restrictive) state.
- * `segmentIndex` is 1-based; prompts omit the "segment N" prefix for
- * single-segment commands.
+ * `segmentIndex` is 1-based; `text` is the segment's command text (what
+ * prompts display in place of a "segment N" label). Prompts omit the segment
+ * prefix for single-segment commands.
  */
 export type BashReason =
-  | { kind: "command"; segmentIndex: number; pattern: string }
-  | { kind: "redirect"; segmentIndex: number; target: string; pattern: string }
-  | { kind: "opaque"; segmentIndex: number }
-  | { kind: "default"; segmentIndex: number };
+  | { kind: "command"; segmentIndex: number; text: string; pattern: string }
+  | { kind: "redirect"; segmentIndex: number; text: string; target: string; pattern: string }
+  | { kind: "opaque"; segmentIndex: number; text: string }
+  | { kind: "default"; segmentIndex: number; text: string };
 
 export type SkillPermissions = Record<string, PermissionState>;
 
