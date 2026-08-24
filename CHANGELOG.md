@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Compound command support for `bash` permissions: commands are split into segments on `&&`, `||`, `|&`, `;`, `|`, `&`, and newlines, each segment is matched independently, and the most restrictive result wins (deny > ask > allow). A pattern like `bun * 2>&1*` now matches `cd repo && bun tests/foo.test.ts 2>&1`.
+- Control-flow awareness for `bash` permissions: `if`/`elif`/`then`/`else`/`fi`, `while`/`until`/`do`/`done`, and `for`/`in`/`do`/`done` structures are walked, and their constituent commands (condition + every branch / loop body) become separate segments matched against your rules — a deny rule can no longer be evaded by wrapping the command in an `if`. `for` headers (variable + word list) are data, not commands. Control flow that cannot be walked with confidence (missing terminators, `$(...)`/backticks in a `for` list, nesting beyond 16 levels) makes the whole command opaque (always `ask`).
+- New opt-in `bashRedirect` policy section: wildcard patterns on output-redirect targets (`>`, `>>`, `&>`, `<>`). fd-dup (`2>&1`) and input (`<`) redirects are exempt; a redirect can only make a segment's decision more restrictive; unmatched targets fall back to the default bash state.
+- `bash` segments now strip a leading run of variable-assignment words before matching, so `FOO=bar git push` is checked as `git push` and an anchored rule (e.g. `rm *`) can no longer be evaded by prefixing assignments. Stripping applies only to fully-unquoted `NAME=value` words at the very start of a segment, before any redirect or other token; assignment-only segments (e.g. `FOO=bar`) keep their full text.
+
+### Changed
+For compound commands each reason is followed by the quoted segment text on the next line (truncated to 60 chars, multi-line segments collapsed to one); single-segment commands show the bare reason with no segment reference. Replaces the old
+- Bash commands containing constructs the tokenizer does not classify (command substitution `$(...)`, backticks, here-strings `<<<`, multiple heredocs on one line, unbalanced or unterminated quotes) are now *opaque*: they skip pattern matching and always resolve to `ask` instead of being matched as one whole string against patterns.
+- Command substitution inside **double quotes** (`"$(...)"`, `` "`..."` ``) is now *opaque* too: the tokenizer treats quoted content as inert data, but bash executes these substitutions at runtime (e.g. `git push FOO="$(rm -rf /)"` previously matched `git *`). Escaped forms like `\$(...)` may over-ask — the safe direction. Double-quoted substitutions in a `for` word list make the whole command opaque, matching the existing treatment of unquoted ones.
+- `bash` patterns now match per-segment rather than against the full raw command string; trailing comments are ignored when matching.
+
 ## [0.8.0] - 2026-07-03
 
 ### Changed

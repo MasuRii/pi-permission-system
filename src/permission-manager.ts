@@ -2,6 +2,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
+import { evaluateBashCommand, expandHomeInPattern } from "./bash-filter.js";
 import {
   extractFrontmatter,
   findFirstMatchForNames,
@@ -54,6 +55,7 @@ const EMPTY_GLOBAL_CONFIG: GlobalPermissionConfig = {
   defaultPolicy: DEFAULT_POLICY,
   tools: {},
   bash: {},
+  bashRedirect: {},
   mcp: {},
   skills: {},
   special: {},
@@ -139,10 +141,21 @@ function normalizeRawPermission(raw: unknown): AgentPermissions {
   const record = toRecord(raw);
   const normalizedTools = normalizePermissionRecord(record.tools);
 
+  // Redirect-target patterns are matched against normalized absolute paths,
+  // so expand a leading `~` in the patterns for a convenience that mirrors
+  // what the matcher does to command targets.
+  const normalizedBashRedirect = Object.fromEntries(
+    Object.entries(normalizePermissionRecord(record.bashRedirect)).map(([pattern, state]) => [
+      expandHomeInPattern(pattern),
+      state,
+    ]),
+  );
+
   const normalized: AgentPermissions = {
     defaultPolicy: normalizePartialPolicy(record.defaultPolicy),
     tools: normalizedTools,
     bash: normalizePermissionRecord(record.bash),
+    bashRedirect: normalizedBashRedirect,
     mcp: normalizePermissionRecord(record.mcp),
     skills: normalizePermissionRecord(record.skills),
     special: normalizePermissionRecord(record.special),
@@ -319,7 +332,7 @@ type LayeredPermissionMatch = {
   matchedName: string;
 };
 
-type PermissionRecordCategory = "tools" | "bash" | "mcp" | "skills" | "special";
+type PermissionRecordCategory = "tools" | "bash" | "bashRedirect" | "mcp" | "skills" | "special";
 type PermissionDefaultCategory = keyof PermissionDefaultPolicy;
 type CompiledPermissionPatterns = readonly CompiledWildcardPattern<LayeredPermissionState>[];
 
@@ -333,6 +346,7 @@ type ResolvedPermissions = {
   compiledSkills: CompiledPermissionPatterns;
   compiledMcp: CompiledPermissionPatterns;
   compiledBash: CompiledPermissionPatterns;
+  compiledBashRedirect: CompiledPermissionPatterns;
 };
 
 function createPermissionLayers(
@@ -650,14 +664,15 @@ export class PermissionManager {
       const parsed = parseJsoncConfig(raw, this.globalConfigPath, "permission config");
       const normalized = normalizeRawPermission(parsed);
 
-      value = {
-        defaultPolicy: normalizePolicy(normalized.defaultPolicy),
-        tools: normalized.tools || {},
-        bash: normalized.bash || {},
-        mcp: normalized.mcp || {},
-        skills: normalized.skills || {},
-        special: normalized.special || {},
-      };
+        value = {
+          defaultPolicy: normalizePolicy(normalized.defaultPolicy),
+          tools: normalized.tools || {},
+          bash: normalized.bash || {},
+          bashRedirect: normalized.bashRedirect || {},
+          mcp: normalized.mcp || {},
+          skills: normalized.skills || {},
+          special: normalized.special || {},
+        };
     } catch (error) {
       const warning = formatJsoncConfigLoadWarning(
         this.globalConfigPath,
@@ -763,6 +778,10 @@ export class PermissionManager {
         ...(globalConfig.bash || {}),
         ...(agentConfig.bash || {}),
       },
+      bashRedirect: {
+        ...(globalConfig.bashRedirect || {}),
+        ...(agentConfig.bashRedirect || {}),
+      },
       mcp: {
         ...(globalConfig.mcp || {}),
         ...(agentConfig.mcp || {}),
@@ -816,6 +835,7 @@ export class PermissionManager {
       compiledSkills: compilePermissionPatternsFromLayers("skills", layers),
       compiledMcp: compilePermissionPatternsFromLayers("mcp", layers),
       compiledBash: compilePermissionPatternsFromLayers("bash", layers),
+      compiledBashRedirect: compilePermissionPatternsFromLayers("bashRedirect", layers),
     };
 
     this.resolvedPermissionsCache.set(cacheKey, { stamp, value });
@@ -906,7 +926,7 @@ export class PermissionManager {
   }
 
   checkPermission(toolName: string, input: unknown, agentName?: string): PermissionCheckResult {
-    const { merged, layers, compiledTools, compiledSpecial, compiledSkills, compiledMcp, compiledBash } = this.resolvePermissions(agentName);
+    const { merged, layers, compiledTools, compiledSpecial, compiledSkills, compiledMcp, compiledBash, compiledBashRedirect } = this.resolvePermissions(agentName);
     const normalizedToolName = toolName.trim();
     const toolMatch = findCompiledPermissionMatch(compiledTools, normalizedToolName);
 
@@ -944,16 +964,44 @@ export class PermissionManager {
     if (normalizedToolName === "bash") {
       const record = toRecord(input);
       const command = typeof record.command === "string" ? record.command : "";
-      const result = findCompiledPermissionMatch(compiledBash, command);
+
+      // Segment compound commands (&& || |& ; | & \n) and evaluate each
+      // segment independently. Opaque segments (unparseable constructs like
+      // $(...) or backticks) skip pattern matching and ALWAYS resolve to
+      // "ask" — never the tool default state. The final decision is the most
+      // restrictive of all segment results (deny > ask > allow).
+      //
+      // When a bashRedirect policy is configured, output-redirect targets
+      // (>, >>, &>, <>) are matched against redirect patterns; a redirect
+      // state more restrictive than the segment's command state wins. fd-dup
+      // (2>&1) and input (<) redirects are exempt.
+      const toolState =
+        toolMatch?.state
+        ?? resolveLayeredDefaultPermission(layers, "bash")?.state
+        ?? DEFAULT_POLICY.bash;
+
+      const evaluation = evaluateBashCommand(
+        command,
+        toolState,
+        (text) => {
+          const match = findCompiledPermissionMatch(compiledBash, text);
+          return match ? { state: match.state, matchedPattern: match.matchedPattern } : null;
+        },
+        compiledBashRedirect.length > 0
+          ? (target) => {
+              const match = findCompiledPermissionMatch(compiledBashRedirect, target);
+              return match ? { state: match.state, matchedPattern: match.matchedPattern } : null;
+            }
+          : null,
+      );
 
       return {
         toolName,
-        state: result?.state
-          ?? toolMatch?.state
-          ?? resolveLayeredDefaultPermission(layers, "bash")?.state
-          ?? DEFAULT_POLICY.bash,
+        state: evaluation.state,
         command,
-        matchedPattern: result?.matchedPattern,
+        bashReasons: evaluation.reasons,
+        bashSegmentCount: evaluation.segmentCount,
+        hasOpaqueSegments: evaluation.hasOpaqueSegments,
         source: "bash",
       };
     }

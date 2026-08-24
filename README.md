@@ -376,7 +376,7 @@ Action-scoped resource rules still respect normal permission guardrails: matchin
 
 ### `bash`
 
-Command patterns use `*` wildcards and match against the full command string. If multiple patterns match, the **last declared matching rule wins**. Put broad fallback rules first and more specific overrides later.
+Command patterns use `*` wildcards. Compound commands are split into segments on `&&`, `||`, `|&`, `;`, `|`, `&`, and newlines — every command and pipeline element is evaluated separately, and the **most restrictive** segment result wins (deny > ask > allow). If multiple patterns match a segment, the **last declared matching rule wins**. Put broad fallback rules first and more specific overrides later.
 
 ```jsonc
 {
@@ -387,6 +387,45 @@ Command patterns use `*` wildcards and match against the full command string. If
   }
 }
 ```
+
+So `cd repo && bun tests/foo.test.ts 2>&1` is checked as two segments — `cd repo` and `bun tests/foo.test.ts 2>&1` — each matched independently. Trailing comments are ignored when matching (`git status # note` still matches the exact pattern `git status`).
+
+**Opaque segments.** Commands containing constructs the tokenizer does not classify — command substitution `$(...)`, backticks, **command substitution inside double quotes** (`"$(...)"`, `` "`..."` ``), here-strings `<<<`, multiple heredocs on one line, unbalanced or unterminated quotes — are *opaque*: they skip pattern matching entirely and always resolve to `ask`, regardless of your patterns or default policy. This is deliberate: a pattern like `bun *` should not silently permit `bun $(curl ... | sh)` — and the double-quoted forms, which bash also executes at runtime. (Escaped forms like `\$(...)` may over-ask; asking is the safe direction.)
+
+**Assignment prefixes.** A leading run of variable assignments is stripped before matching, so `FOO=bar git push` is checked as `git push` — an anchored rule like `rm *` cannot be evaded by prefixing assignments (`FOO=bar rm -rf /tmp/x`). Stripping applies only to fully-unquoted `NAME=value` words at the very start of a segment, before any redirect or other token; an assignment-only segment (e.g. `FOO=bar`) keeps its full text.
+
+**Control-flow structures.** `if`/`elif`/`then`/`else`/`fi`, `while`/`until`/`do`/`done`, and `for`/`in`/`do`/`done` are recognized, and their constituent commands are extracted as separate segments: the condition **and** every branch / loop body (any of them can execute). So `if [ -f x ]; then rm x; fi` is checked as `[ -f x]` and `rm x`, and a deny rule for `rm *` cannot be evaded by wrapping the command in an `if`. The `for` header (variable name and word list) is data, not a command — only the loop body is evaluated. Note that conditions are commands: for an `allow` outcome, the condition must also resolve to allow (via a rule or your default policy).
+
+Control flow that cannot be walked with confidence — missing terminators (`fi`/`done`/`do`), stray keywords, `$(...)`/backticks (even double-quoted) in a `for` word list (bash expands the list), arithmetic `for ((...))`, brace lists like `{1..10}`, or nesting deeper than 16 levels — makes the **whole command** opaque (always `ask`). Malformed control flow is a bash syntax error, and broken commands must not ride catch-all rules. `case`/`esac`, `select`, subshells `( ... )`, and grouping `{ ... }` are not yet parsed and remain opaque.
+
+### `bashRedirect`
+
+Optional policy for **output redirection targets** (`>`, `>>`, `&>`, `<>`). Opt-in: when this section is absent or empty, redirects do not affect the permission decision at all.
+
+```jsonc
+{
+  "bashRedirect": {
+    "*": "ask",
+    "/dev/null*": "allow",
+    "/dev/std*": "allow"
+  }
+}
+```
+
+Rules:
+- Patterns match the redirect target, using the same wildcard syntax. **Last declared matching rule wins** — declare broad fallbacks like `*` first, specific overrides later.
+- A redirect can only make a segment *more restrictive*: if any redirect target resolves to a state more restrictive than the segment's command state, the segment takes the redirect state. So `bun tests 2>&1` stays `allow` under the example policy (fd-dup is exempt), while `bun tests > /tmp/out.txt` becomes `ask`.
+- **fd-dup redirects (`2>&1`, `10>&2`) are exempt** — they never write files and are not evaluated against patterns.
+- **Input redirection `<` is exempt** (read-only).
+- Targets that match no pattern resolve to the default bash state.
+- Ask and deny prompts report every decision-affecting match as a reason line — the matched bash rule per segment and each redirect target with its `bashRedirect` rule (see [Permission Prompt Summaries](#permission-prompt-summaries)).
+
+**Target normalization.** Redirect targets are normalized before matching so patterns can be written for canonical paths:
+- Absolute paths are lexically resolved — `>` targets like `/tmp/../etc/foo` become `/etc/foo`, so `..` cannot evade a rule written for `/etc/*` (and an allow rule for `/tmp/*` cannot leak through it).
+- `~` and `~/...` expand to your home directory — in command targets *and* in config patterns, so `{"~/secrets/*": "deny"}` works as expected.
+- Relative targets are left as-is (the cwd at redirect time may differ from the cwd at evaluation time in compound commands like `cd x && cmd > out.txt`), so they simply don't match absolute-path rules and fall through to the default bash state.
+
+Limitations: only redirections are inspected. Commands that write files through plain arguments (`tee file`, `sed -i`, `dd of=...`) are not covered, and redirects inside opaque constructs (e.g. `$(...)`) are not extracted.
 
 ### `mcp`
 
@@ -512,6 +551,20 @@ Reserved permission checks:
 }
 ```
 
+### Safe Redirects Only
+
+Allow commands that only redirect to `/dev/null` (plus fd-dup like `2>&1`), and prompt for anything that writes elsewhere. Note the catch-all `*` is declared **first** — last declared matching rule wins.
+
+```jsonc
+{
+  "bashRedirect": {
+    "*": "ask",
+    "/dev/null*": "allow",
+    "/dev/std*": "allow"
+  }
+}
+```
+
 ### MCP Discovery Only
 
 ```jsonc
@@ -550,10 +603,21 @@ permission:
 
 When a tool permission resolves to `ask`, the prompt is designed to be readable enough for an informed approval decision:
 
-- `bash` prompts show the command and matched bash pattern when available.
+For compound commands each reason is followed by the quoted segment text on the next line (truncated to 60 chars, multi-line segments collapsed to one); single-segment commands show the bare reason with no segment reference. Segments that resolved
 - `mcp` prompts show the derived MCP target and matched rule when available.
 - Built-in file tools show concise summaries, such as the target path and edit/write line counts, instead of raw multiline JSON.
 - Unknown or third-party extension tools show a bounded single-line JSON preview of the input so users are not asked to approve a blind tool name.
+
+Example bash approval prompt (compound command, two deciding segments):
+
+```text
+Current agent requested bash command 'git commit -m x && echo hi > /tmp/out.txt'.
+ - matched 'git *commit*' for segment:
+   'git commit -m x'
+ - redirect to '/tmp/out.txt' matched bashRedirect '*':
+   'echo hi > /tmp/out.txt'
+Allow this command?
+```
 
 Example edit approval prompt:
 

@@ -546,7 +546,12 @@ function getPatternApprovalSubject(result: PermissionCheckResult, input: unknown
 }
 
 function createConfigEvaluationRule(result: PermissionCheckResult): PatternPermissionRule {
-  const canReuseMatchedPattern = result.source === "bash" || result.source === "mcp" || result.source === "skill" || result.source === "special";
+  // Bash results carry per-segment reasons, not a single pattern: a segment's
+  // pattern does not match the full compound command string, so the
+  // re-evaluation uses "*" and relies on session approvals (which record the
+  // exact command) for specificity.
+  const canReuseMatchedPattern = result.source !== "bash"
+    && (result.source === "mcp" || result.source === "skill" || result.source === "special");
   return {
     tool: result.toolName,
     pattern: canReuseMatchedPattern && result.matchedPattern ? result.matchedPattern : "*",
@@ -554,7 +559,7 @@ function createConfigEvaluationRule(result: PermissionCheckResult): PatternPermi
   };
 }
 
-function applyPatternApprovalState(
+export function applyPatternApprovalState(
   result: PermissionCheckResult,
   input: unknown,
   sessionApprovals: SessionApprovalStore,
@@ -564,17 +569,30 @@ function applyPatternApprovalState(
   }
 
   const subject = getPatternApprovalSubject(result, input);
+  const configRule = createConfigEvaluationRule(result);
   const evaluated = evaluatePermission(
     result.toolName,
     subject,
-    [createConfigEvaluationRule(result)],
+    [configRule],
     sessionApprovals.getRules(),
   );
+
+  // The config rule falls back to a synthetic "*" pattern when the result
+  // carries no matched pattern (default-state results, opaque bash
+  // segments). That synthetic pattern must not leak into prompts as if it
+  // were a real config rule. Bash results never carry a matchedPattern —
+  // their reporting uses bashReasons instead.
+  const matchedPattern = result.source === "bash"
+    ? undefined
+    : result.matchedPattern
+      ?? (configRule.pattern === "*" && evaluated.matchedPattern === "*"
+        ? undefined
+        : evaluated.matchedPattern);
 
   return {
     ...result,
     state: evaluated.action,
-    matchedPattern: evaluated.matchedPattern ?? result.matchedPattern,
+    matchedPattern,
   };
 }
 

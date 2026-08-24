@@ -37,6 +37,10 @@
     "bash": {
       "$ref": "#/$defs/permissionMap"
     },
+    "bashRedirect": {
+      "description": "Pattern-based permissions for bash output-redirect targets (`>`, `>>`, `&>`, `<>`). Patterns match the unquoted redirect target, for example `\"/dev/null*\": \"allow\"`. fd-dup redirects (`2>&1`) are exempt by construction, and input redirection (`<`) is not evaluated. When this section is absent or empty, redirect targets do not affect the permission decision; when present, a redirect target that matches no pattern resolves to the default bash state.",
+      "$ref": "#/$defs/permissionMap"
+    },
     "mcp": {
       "description": "Pattern-based permissions for targets invoked through a registered `mcp` tool when available.",
       "$ref": "#/$defs/permissionMap"
