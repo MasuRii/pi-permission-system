@@ -1,4 +1,5 @@
-import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type BeforeAgentStartEvent, type InputEvent, type ResourcesDiscoverEvent, type SessionStartEvent, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, getMarkdownTheme, isToolCallEventType, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type BeforeAgentStartEvent, type InputEvent, type ResourcesDiscoverEvent, type SessionStartEvent, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import { Box, Markdown } from "@earendil-works/pi-tui";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, renameSync, rmdirSync, unlinkSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -154,6 +155,7 @@ const FILESYSTEM_TOOL_NAME_SUFFIXES = ["read", "write", "edit", "find", "grep", 
 const SKILLS_DIR_PARTS = [".pi", "agent", "skills"] as const;
 const DUPLICATE_PERMISSION_PROMPT_CACHE_TTL_MS = 2 * 60 * 1000;
 const DUPLICATE_PERMISSION_PROMPT_CACHE_MAX_ENTRIES = 128;
+const APPROVAL_MESSAGE_CUSTOM_TYPE = "approval-message";
 
 let extensionConfig: PermissionSystemExtensionConfig = { ...DEFAULT_EXTENSION_CONFIG };
 let runtimeApi: PiPermissionSystemRuntimeApi | null = null;
@@ -380,16 +382,12 @@ function createSensitiveLogMetadata(value: string | undefined): SensitiveLogMeta
 }
 
 function clonePermissionPromptDecision(decision: PermissionPromptDecision): PermissionPromptDecision {
-  return decision.denialReason === undefined
-    ? {
-      approved: decision.approved,
-      state: decision.state,
-    }
-    : {
-      approved: decision.approved,
-      state: decision.state,
-      denialReason: decision.denialReason,
-    };
+  return {
+    approved: decision.approved,
+    state: decision.state,
+    ...(decision.denialReason === undefined ? {} : { denialReason: decision.denialReason }),
+    ...(decision.approvalMessage === undefined ? {} : { approvalMessage: decision.approvalMessage }),
+  };
 }
 
 function createDuplicatePermissionPromptDecision(decision: PermissionPromptDecision): PermissionPromptDecision {
@@ -2214,6 +2212,19 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       if (!decision.approved) {
         return { block: true, reason: formatUserDeniedReason(check, decision.denialReason) };
       }
+      if (decision.approvalMessage) {
+        pi.sendMessage(
+          {
+            customType: APPROVAL_MESSAGE_CUSTOM_TYPE,
+            content: `The user approved the previous tool call and added a note while you were still working:\n${decision.approvalMessage}`,
+            display: true,
+          },
+          {
+            triggerTurn: true,
+            deliverAs: "steer",
+          },
+        );
+      }
       const approval = persistSessionApprovalDecision(decision, check, input, sessionApprovals);
       if (approval) {
         writeReviewEntry("permission_request.approval_persisted", {
@@ -2232,5 +2243,23 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
 
     return {};
+  });
+
+  pi.registerMessageRenderer(APPROVAL_MESSAGE_CUSTOM_TYPE, (message, _options, theme) => {
+    const rawContent = message.content;
+    if (typeof rawContent != "string") {
+      // Should not happen since `content` in `sendMessage` is a plain string.
+      throw new Error("Only `string` content is supported as an approval message.");
+    }
+
+    const noteText = rawContent.slice(rawContent.indexOf("\n") + 1);
+
+    const box = new Box(1, 1, (line: string) => theme.bg("userMessageBg", line));
+    box.addChild(
+      new Markdown(noteText, 0, 0, getMarkdownTheme(), {
+        color: (line: string) => theme.fg("userMessageText", line),
+      }),
+    );
+    return box;
   });
 }
