@@ -1,3 +1,9 @@
+// Keep this line. Without a top-level import or export, TypeScript treats
+// this file as a global script. Then every `declare module "x"` below would
+// replace module "x" instead of adding to it. That's what quietly dropped
+// declarations from ExtensionAPI before.
+export {};
+
 declare namespace NodeJS {
   interface ProcessEnv {
     [key: string]: string | undefined;
@@ -161,30 +167,6 @@ declare module "@earendil-works/pi-coding-agent" {
   }
 
   export type ExtensionHandler<E, R = void> = (event: E, ctx: ExtensionContext) => Promise<R | void> | R | void;
-
-  export interface ExtensionAPI {
-    on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
-    on(event: "resources_discover", handler: ExtensionHandler<ResourcesDiscoverEvent>): void;
-    on(event: "session_shutdown", handler: () => Promise<void> | void): void;
-    on(event: "before_agent_start", handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>): void;
-    on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
-    on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): void;
-    on(event: string, handler: (...args: any[]) => any): void;
-    getAllTools(): unknown[];
-    setActiveTools(toolNames: string[]): void;
-    registerProvider?(...args: any[]): void;
-    registerCommand(
-      name: string,
-      definition: {
-        description: string;
-        getArgumentCompletions?: (argumentPrefix: string) => Array<{ value: string; label: string; description?: string }> | null;
-        handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> | void;
-      },
-    ): void;
-    events: {
-      emit(channel: string, payload: unknown): void;
-    };
-  }
 
   export interface BeforeAgentStartEventResult {
     systemPrompt?: string;
