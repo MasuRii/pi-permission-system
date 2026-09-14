@@ -6,6 +6,7 @@ export type PermissionPromptDecision = {
   approved: boolean;
   state: PermissionDecisionState;
   denialReason?: string;
+  approvalMessage?: string;
 };
 
 export interface PermissionDecisionUiSelectOptions {
@@ -23,11 +24,13 @@ export type PermissionDecisionRequestOptions = {
 };
 
 const APPROVE_ONCE_OPTION = "Allow Once";
+const APPROVE_ONCE_WITH_MESSAGE_OPTION = "Allow Once with Message";
 const APPROVE_ALWAYS_OPTION = "Allow Always";
 const REJECT_OPTION = "Reject";
 const REJECT_WITH_REASON_OPTION = "Reject with Reason";
 const PERMISSION_DECISION_OPTIONS = [
   APPROVE_ONCE_OPTION,
+  APPROVE_ONCE_WITH_MESSAGE_OPTION,
   APPROVE_ALWAYS_OPTION,
   REJECT_OPTION,
   REJECT_WITH_REASON_OPTION,
@@ -128,6 +131,19 @@ export async function requestPermissionDecisionFromUi(
       approved: true,
       state: "once",
     };
+  }
+
+  if (selected === APPROVE_ONCE_WITH_MESSAGE_OPTION) {
+    const approvalMessage = getNonEmptyString(
+      await ui.input(
+        `${title}\nMessage to steer the agent alongside this approval (optional).`,
+        "Note shown to the agent",
+      ),
+    );
+
+    return approvalMessage
+      ? { approved: true, state: "once", approvalMessage }
+      : { approved: true, state: "once" };
   }
 
   if (selected === APPROVE_ALWAYS_OPTION) {

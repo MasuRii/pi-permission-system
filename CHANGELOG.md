@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.0] - 2026-07-03
 
+### Added
+- Added `Allow Once with Message` which approves the command once and sends a message to steer the agent.
+
 ### Changed
 - Extracted shared utilities and consolidated permission matching. ([d1875bd](https://github.com/MasuRii/pi-permission-system/commit/d1875bdd1a26989bdd8cd1193cad9a50622897f6))
 - Preserved non-extension config fields and handled symlinks during config writes. ([acd5c79](https://github.com/MasuRii/pi-permission-system/commit/acd5c79850bfbe00c4511f333b6ea14c6f904178))
