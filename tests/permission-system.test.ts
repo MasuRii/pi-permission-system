@@ -117,6 +117,7 @@ type ExtensionHarness = {
   registeredEvents: string[];
   prompts: string[];
   debugPath: string;
+  setActiveToolsCalls: string[][];
   cleanup: () => Promise<void>;
 };
 
@@ -129,6 +130,8 @@ type ExtensionHarnessOptions = {
   notifications?: Array<{ message: string; level: string }>;
   extensionConfig?: PermissionSystemExtensionConfig;
   activeAgentName?: string | null;
+  activeToolNames?: string[];
+  omitActiveTools?: boolean;
 };
 
 const INHERITED_SUBAGENT_ENV_KEYS = [
@@ -180,6 +183,7 @@ function createToolCallHarness(
   const prompts: string[] = [];
   const handlers: Record<string, MockHandler> = {};
   const registeredEvents: string[] = [];
+  const setActiveToolsCalls: string[][] = [];
   const extensionConfigPath = join(baseDir, "extension-config.json");
   const logsDir = join(baseDir, "extension-logs");
   const debugPath = join(logsDir, "pi-permission-system-debug.jsonl");
@@ -207,7 +211,12 @@ function createToolCallHarness(
       },
       registerCommand: (): void => {},
       getAllTools: (): Array<{ name: string }> => toolNames.map((name) => ({ name })),
-      setActiveTools: (): void => {},
+      ...(options.omitActiveTools === true ? {} : {
+        getActiveTools: (): string[] => [...(options.activeToolNames ?? toolNames)],
+      }),
+      setActiveTools: (names: string[]): void => {
+        setActiveToolsCalls.push(names);
+      },
       registerProvider: (): void => {},
       events: {
         emit: (): void => {},
@@ -228,6 +237,7 @@ function createToolCallHarness(
     registeredEvents,
     prompts,
     debugPath,
+    setActiveToolsCalls,
     cleanup: async (): Promise<void> => {
       await Promise.resolve(handlers.session_shutdown?.({}, createMockContext(cwd, prompts, options)));
       if (originalConfigPath === undefined) {
@@ -385,6 +395,89 @@ await runAsyncTest("Extension dedupes identical permission parse warnings across
     await harness.cleanup();
   }
 });
+
+await runAsyncTest("before_agent_start does not re-activate tools held out of the active set", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "allow" },
+    },
+    ["read", "bash", "mcp_held_tool"],
+    { activeToolNames: ["read", "bash"] },
+  );
+
+  try {
+    writeProjectPermissionConfig(harness.cwd, {
+      defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "allow" },
+    });
+    const ctx = createMockContext(harness.cwd, harness.prompts, {});
+    await Promise.resolve(harness.handlers.session_start?.({ reason: "startup" }, ctx));
+    await Promise.resolve(harness.handlers.before_agent_start?.({ systemPrompt: "" }, ctx));
+
+    const applied = harness.setActiveToolsCalls.at(-1) ?? [];
+    assert.equal(applied.includes("mcp_held_tool"), false, "held tool must stay out of the active set");
+    assert.equal(applied.includes("read"), true);
+    assert.equal(applied.includes("bash"), true);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("before_agent_start still drops denied tools that are active", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "allow" },
+      tools: { write: "deny" },
+    },
+    ["write", "bash"],
+    { activeToolNames: ["write", "bash"] },
+  );
+
+  try {
+    writeProjectPermissionConfig(harness.cwd, {
+      defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "allow" },
+      tools: { write: "deny" },
+    });
+    const ctx = createMockContext(harness.cwd, harness.prompts, {});
+    await Promise.resolve(harness.handlers.session_start?.({ reason: "startup" }, ctx));
+    await Promise.resolve(harness.handlers.before_agent_start?.({ systemPrompt: "" }, ctx));
+
+    const applied = harness.setActiveToolsCalls.at(-1) ?? [];
+    assert.equal(applied.includes("write"), false, "denied tool must be removed from the active set");
+    assert.equal(applied.includes("bash"), true);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("before_agent_start keeps legacy behavior when getActiveTools is unavailable", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "allow" },
+    },
+    ["read", "bash", "legacy_tool"],
+    { omitActiveTools: true },
+  );
+
+  try {
+    writeProjectPermissionConfig(harness.cwd, {
+      defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "allow" },
+    });
+    const ctx = createMockContext(harness.cwd, harness.prompts, {});
+    await Promise.resolve(harness.handlers.session_start?.({ reason: "startup" }, ctx));
+    await Promise.resolve(harness.handlers.before_agent_start?.({ systemPrompt: "" }, ctx));
+
+    const applied = harness.setActiveToolsCalls.at(-1) ?? [];
+    assert.equal(applied.includes("legacy_tool"), true);
+    assert.equal(applied.includes("read"), true);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+function writeProjectPermissionConfig(cwd: string, config: Record<string, unknown>): void {
+  mkdirSync(join(cwd, ".pi", "agent"), { recursive: true });
+  writeFileSync(join(cwd, ".pi", "agent", "pi-permissions.jsonc"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+}
 
 runTest("Permission-system extension config defaults debug and yolo mode off", () => {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-config-"));

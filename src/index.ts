@@ -1878,11 +1878,28 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     startForwardedPermissionPolling(ctx);
     const agentName = resolveAgentName(ctx, event.systemPrompt);
     const allTools = pi.getAllTools();
+    // Permission filtering must never *expand* the active tool set. Other
+    // extensions may hold tools out of the active set on purpose — e.g.
+    // pi-mcp-adapter registers "search"-mode direct tools as real tools with
+    // real schemas but keeps them inactive until mcp({ search }) activates
+    // them. Building the allow-list from every registered tool and passing it
+    // to setActiveTools re-activates those held tools, so their full schemas
+    // leak into every request and progressive disclosure silently fails.
+    // Filter only what is currently active: newly registered or re-activated
+    // tools still pass through on later turns, while held tools stay out of
+    // both the active set and the system prompt. Fall back to the previous
+    // behavior when getActiveTools is unavailable (older pi, test stubs).
+    const getActiveToolsFn = (pi as { getActiveTools?: () => string[] }).getActiveTools;
+    const currentlyActive = typeof getActiveToolsFn === "function" ? new Set(getActiveToolsFn.call(pi)) : null;
     const allowedTools: string[] = [];
 
     for (const tool of allTools) {
       const toolName = getEventToolName(tool);
       if (!toolName) {
+        continue;
+      }
+
+      if (currentlyActive && !currentlyActive.has(toolName)) {
         continue;
       }
 
