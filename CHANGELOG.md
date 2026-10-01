@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Tool filtering now only removes denied tools from Pi's active set instead of activating every registered tool that is not denied. `defaultTools` (including `+name`/`-name` entries), `--tools`, manual toggles, and `tool_search` loads are respected, and `codemode`/`deferred` tools such as MCP tools stay inactive until loaded. Tools hidden by policy are restored when policy allows them again. Pi versions without `getActiveTools()` keep the previous behavior.
+
 ## [0.8.0] - 2026-07-03
 
 ### Changed

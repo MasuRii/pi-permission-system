@@ -14,6 +14,7 @@ import {
   PERMISSION_SYSTEM_COMMAND_DESCRIPTION,
   toRecord,
 } from "./common.js";
+import { resolveActiveTools } from "./active-tools.js";
 import {
   createActiveToolsCacheKey,
   createBeforeAgentStartPromptStateKey,
@@ -292,6 +293,33 @@ function getActiveAgentName(ctx: ExtensionContext): string | null {
   }
 
   return null;
+}
+
+// Like getActiveAgentName(), but distinguishes an explicit "default" state
+// (`{ name: null }`) from the absence of any active_agent entry.
+//   - { name: "plan" } -> { name: "plan" }
+//   - { name: null }   -> { name: null }   (explicit default)
+//   - no entry         -> undefined         (unknown / fall back)
+function getActiveAgentEntry(ctx: ExtensionContext): { name: string | null } | undefined {
+  const entries = ctx.sessionManager.getEntries();
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i] as { type: string; customType?: string; data?: unknown };
+    if (entry.type !== "custom" || entry.customType !== "active_agent") {
+      continue;
+    }
+
+    const data = entry.data as { name?: unknown } | undefined;
+    const normalizedName = normalizeAgentName(data?.name);
+    if (normalizedName) {
+      return { name: normalizedName };
+    }
+
+    if (data?.name === null) {
+      return { name: null };
+    }
+  }
+
+  return undefined;
 }
 
 function getActiveAgentNameFromSystemPrompt(systemPrompt: string | undefined): string | null {
@@ -1310,6 +1338,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   const explicitlyRequestedSkillNames = new Set<string>();
   let lastKnownActiveAgentName: string | null = null;
   let lastActiveToolsCacheKey: string | null = null;
+  let toolsHiddenByPolicy = new Set<string>();
   let lastPromptStateCacheKey: string | null = null;
   let lastPromptStateCacheResult: CachedPromptStateResult | null = null;
   let permissionForwardingContext: ExtensionContext | null = null;
@@ -1773,10 +1802,17 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   };
 
   const resolveAgentName = (ctx: ExtensionContext, systemPrompt?: string): string | null => {
-    const fromSession = getActiveAgentName(ctx);
-    if (fromSession) {
-      lastKnownActiveAgentName = fromSession;
-      return fromSession;
+    // NOTE: an explicit `{ name: null }` active_agent entry means "return to
+    // the default agent" and must be distinguished from "no active_agent
+    // entry recorded yet". getActiveAgentName() collapses both into null, so
+    // we check for the presence of an explicit entry first. Without this,
+    // switching plan/build -> default would keep the stale
+    // lastKnownActiveAgentName and never lift the previous agent's
+    // restrictions.
+    const sessionEntry = getActiveAgentEntry(ctx);
+    if (sessionEntry) {
+      lastKnownActiveAgentName = sessionEntry.name;
+      return sessionEntry.name;
     }
 
     const fromSystemPrompt = getActiveAgentNameFromSystemPrompt(systemPrompt);
@@ -1869,6 +1905,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     explicitlyRequestedSkillNames.clear();
     runtimeApi = null;
     invalidateAgentStartCache();
+    toolsHiddenByPolicy = new Set<string>();
     stopForwardedPermissionPolling();
   });
 
@@ -1878,23 +1915,52 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     startForwardedPermissionPolling(ctx);
     const agentName = resolveAgentName(ctx, event.systemPrompt);
     const allTools = pi.getAllTools();
-    const allowedTools: string[] = [];
+    let allowedTools: string[] = [];
 
-    for (const tool of allTools) {
-      const toolName = getEventToolName(tool);
-      if (!toolName) {
-        continue;
+    if (typeof pi.getActiveTools === "function") {
+      // Only remove denied tools from Pi's active set. Activating every registered tool would
+      // override `defaultTools` and declare `codemode`/`deferred` tools (such as MCP tools) that
+      // Pi keeps inactive until codemode or tool_search reaches them.
+      const registeredToolNames = new Set<string>();
+      for (const tool of allTools) {
+        const toolName = getEventToolName(tool);
+        if (toolName) {
+          registeredToolNames.add(toolName);
+        }
       }
 
-      if (shouldExposeTool(toolName, agentName)) {
-        allowedTools.push(toolName);
-      }
-    }
+      const activeTools = pi.getActiveTools();
+      const resolved = resolveActiveTools({
+        activeToolNames: activeTools,
+        registeredToolNames,
+        hiddenByPolicy: toolsHiddenByPolicy,
+        isToolExposed: (toolName) => shouldExposeTool(toolName, agentName),
+      });
+      toolsHiddenByPolicy = resolved.hiddenByPolicy;
+      allowedTools = resolved.activeToolNames;
 
-    const activeToolsCacheKey = createActiveToolsCacheKey(allowedTools);
-    if (shouldApplyCachedAgentStartState(lastActiveToolsCacheKey, activeToolsCacheKey)) {
-      pi.setActiveTools(allowedTools);
-      lastActiveToolsCacheKey = activeToolsCacheKey;
+      // Each active set change is recorded in the transcript, so only apply real changes.
+      if (resolved.changed) {
+        pi.setActiveTools(allowedTools);
+      }
+    } else {
+      // Pi versions without getActiveTools(): expose every registered tool policy allows.
+      for (const tool of allTools) {
+        const toolName = getEventToolName(tool);
+        if (!toolName) {
+          continue;
+        }
+
+        if (shouldExposeTool(toolName, agentName)) {
+          allowedTools.push(toolName);
+        }
+      }
+
+      const activeToolsCacheKey = createActiveToolsCacheKey(allowedTools);
+      if (shouldApplyCachedAgentStartState(lastActiveToolsCacheKey, activeToolsCacheKey)) {
+        pi.setActiveTools(allowedTools);
+        lastActiveToolsCacheKey = activeToolsCacheKey;
+      }
     }
 
     const promptStateCacheKey = createBeforeAgentStartPromptStateKey({

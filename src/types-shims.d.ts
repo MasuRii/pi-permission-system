@@ -171,6 +171,8 @@ declare module "@earendil-works/pi-coding-agent" {
     on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): void;
     on(event: string, handler: (...args: any[]) => any): void;
     getAllTools(): unknown[];
+    /** Names of the tools declared to the model. Missing on Pi versions before it was added. */
+    getActiveTools?(): string[];
     setActiveTools(toolNames: string[]): void;
     registerProvider?(...args: any[]): void;
     registerCommand(
